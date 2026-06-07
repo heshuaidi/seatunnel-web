@@ -3,6 +3,8 @@ import { openPrettyNotification } from "@/utils/prettyNotification";
 import { history } from "umi";
 import { extend } from "umi-request";
 
+const API_BASE = process.env.API_BASE || "";
+
 const codeMessage: Record<number, string> = {
   10000: "系统未知错误，请反馈给管理员",
   200: "服务器成功返回请求的数据。",
@@ -132,6 +134,7 @@ const errorHandler = (error: any): Response | undefined => {
 
 function createClient() {
   return extend({
+    baseURL: API_BASE,
     errorHandler,
     credentials: "include",
   });

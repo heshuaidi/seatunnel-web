@@ -18,6 +18,7 @@ import HttpUtils from "./utils/HttpUtils";
 
 const isDev = process.env.NODE_ENV === "development";
 const loginPath = "/login";
+const API_BASE = process.env.API_BASE || "https://proapi.azurewebsites.net";
 
 /**
  * @see https://umijs.org/docs/api/runtime-config#getinitialstate
@@ -148,6 +149,6 @@ export const layout: RunTimeLayoutConfig = ({
  * @doc https://umijs.org/docs/max/request#配置
  */
 export const request: RequestConfig = {
-  baseURL: "https://proapi.azurewebsites.net",
+  baseURL: API_BASE,
   ...errorConfig,
 };
