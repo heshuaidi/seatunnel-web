@@ -2,19 +2,8 @@ import MysqlIcon from '../data-source/icon/MysqlIcon';
 import OracleIcon from '../data-source/icon/OracleIcon';
 import { SendOutlined } from '@ant-design/icons';
 import { Select } from 'antd';
-import CacheIcon from '../data-source/icon/CacheIcon';
-import ClickhouseIcon from '../data-source/icon/ClickhouseIcon';
-import DaMengIcon from '../data-source/icon/DamengIcon';
-import DB2Icon from '../data-source/icon/DB2Icon';
-import DorisIcon from '../data-source/icon/DorisIcon';
-import HiveIcon from '../data-source/icon/HiveIcon';
-import MongoDBIcon from '../data-source/icon/MongoDBIcon';
-import OpenGaussIcon from '../data-source/icon/OpenGaussIcon';
 import PostgreSQL from '../data-source/icon/PsSqlIcon';
-import SQLServer from '../data-source/icon/SQLServer';
 import StarRocksIcon from '../data-source/icon/StarRocksIcon';
-import KingBaseIcon from '../data-source/icon/KingBaseIcon';
-import TiDBIcon from '../data-source/icon/TiDBIcon';
 
 const { Option } = Select;
 
@@ -22,6 +11,7 @@ type DataSourceType =
   | 'MYSQL'
   | 'ORACLE'
   | 'POSTGRE_SQL'
+  | 'STARROCKS'
 
 type DataSourceSelectorProps = {
   type: 'source' | 'target';
@@ -38,23 +28,32 @@ const DATA_SOURCE_CONFIG: Record<
 > = {
   MYSQL: { icon: MysqlIcon, displayName: 'MySQL' },
   ORACLE: { icon: OracleIcon, displayName: 'ORACLE' },
-  POSTGRE_SQL: { icon: PostgreSQL, displayName: 'PGSQL' }
+  POSTGRE_SQL: { icon: PostgreSQL, displayName: 'PGSQL' },
+  STARROCKS: { icon: StarRocksIcon, displayName: 'StarRocks' }
 };
 
-// 默认支持的数据源
-const DEFAULT_DATA_SOURCES: DataSourceType[] = [
+const DEFAULT_TARGET_DATA_SOURCES: DataSourceType[] = [
   'MYSQL',
   'ORACLE',
-  'POSTGRE_SQL'
+  'POSTGRE_SQL',
+  'STARROCKS'
 ];
+
+const DEFAULT_SOURCE_DATA_SOURCES: DataSourceType[] =
+  DEFAULT_TARGET_DATA_SOURCES.filter((item) => item !== 'STARROCKS');
 
 const DataSourceSelector = ({
   type,
   value,
   onChange,
   style,
-  dataSources = DEFAULT_DATA_SOURCES,
+  dataSources,
 }: DataSourceSelectorProps) => {
+  const visibleDataSources = (
+    dataSources ||
+    (type === 'source' ? DEFAULT_SOURCE_DATA_SOURCES : DEFAULT_TARGET_DATA_SOURCES)
+  ).filter((item) => type !== 'source' || item !== 'STARROCKS');
+
   const renderDataSourceOption = (dataSourceType: DataSourceType) => {
     const config = DATA_SOURCE_CONFIG[dataSourceType];
     if (!config) {
@@ -89,10 +88,10 @@ const DataSourceSelector = ({
       suffixIcon={<SendOutlined />}
       style={style}
       filterOption={(input, option) =>
-        (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+        String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())
       }
     >
-      {dataSources.map(renderDataSourceOption)}
+      {visibleDataSources.map(renderDataSourceOption)}
     </Select>
   );
 };

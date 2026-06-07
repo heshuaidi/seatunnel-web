@@ -5,6 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.seatunnel.plugin.datasource.api.hocon.DataSourceHoconBuilder;
+import org.apache.seatunnel.plugin.datasource.api.hocon.DataSourceHoconPluginNameResolver;
 import org.apache.seatunnel.plugin.datasource.api.jdbc.DataSourceProcessor;
 import org.apache.seatunnel.plugin.datasource.api.jdbc.JdbcCatalog;
 import org.apache.seatunnel.plugin.datasource.api.modal.DataSourceTableColumn;
@@ -301,11 +302,8 @@ public class DataSourceCatalogServiceImpl implements DataSourceCatalogService {
         /*
          * 兜底逻辑：
          * 前端预览接口当前不一定传 pluginName。
-         * JDBC 插件一般是 JDBC-MYSQL / JDBC-POSTGRESQL / JDBC-ORACLE 这种形式。
-         *
-         * 如果你的 DbType 与插件名不是这个规则，建议前端 requestBody 明确传 pluginName。
          */
-        return "JDBC-" + String.valueOf(dataSource.getDbType()).toUpperCase();
+        return DataSourceHoconPluginNameResolver.resolveBuilderName(dataSource.getDbType());
     }
 
     private JobScheduleConfig buildScheduleConfig(Map<String, Object> requestBody) {

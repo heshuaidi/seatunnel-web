@@ -41,6 +41,12 @@ export const sourceList = [
         type: "POSTGRE_SQL",
         connectorType: "Jdbc"
       },
+      {
+        onlyDiScript: false,
+        dbType: "STARROCKS",
+        type: "STARROCKS",
+        connectorType: "StarRocks"
+      },
 
     ],
   }

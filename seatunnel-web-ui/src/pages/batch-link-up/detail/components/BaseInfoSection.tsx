@@ -38,7 +38,7 @@ const BaseConfigSection: React.FC<Props> = ({
             <DataSourceSelect
               value={sourceType}
               onChange={handleSourceChange}
-              dataSourceOptions={generateDataSourceOptions()}
+              dataSourceOptions={generateDataSourceOptions("source")}
               placeholder="请选择来源"
               prefix="来源"
               width="48%"
@@ -51,7 +51,7 @@ const BaseConfigSection: React.FC<Props> = ({
             <DataSourceSelect
               value={targetType}
               onChange={handleTargetChange}
-              dataSourceOptions={generateDataSourceOptions()}
+              dataSourceOptions={generateDataSourceOptions("target")}
               placeholder="请选择去向"
               prefix="去向"
               width="48%"

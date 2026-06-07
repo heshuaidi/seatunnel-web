@@ -88,7 +88,7 @@ const DataSyncHeader: React.FC<DataSyncHeaderProps> = ({
               prefix="来源："
               value={sourceType?.dbType}
               onChange={handleSourceChange}
-              options={generateDataSourceOptions()}
+              options={generateDataSourceOptions("source")}
               bordered={false}
               showSearch
               className="flex-1"
@@ -104,7 +104,7 @@ const DataSyncHeader: React.FC<DataSyncHeaderProps> = ({
               prefix="去向："
               value={targetType?.dbType}
               onChange={handleTargetChange}
-              options={generateDataSourceOptions()}
+              options={generateDataSourceOptions("target")}
               bordered={false}
               showSearch
               className="flex-1"

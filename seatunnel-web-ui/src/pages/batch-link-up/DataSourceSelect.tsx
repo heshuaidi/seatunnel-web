@@ -1,9 +1,9 @@
 import { SendOutlined } from "@ant-design/icons";
 import { Select } from "antd";
-import { useMemo } from "react";
 import MysqlIcon from "../data-source/icon/MysqlIcon";
 import OracleIcon from "../data-source/icon/OracleIcon";
 import PostgreSQL from "../data-source/icon/PsSqlIcon";
+import StarRocksIcon from "../data-source/icon/StarRocksIcon";
 import "./index.less";
 // 类型定义
 interface DataSourceType {
@@ -13,8 +13,11 @@ interface DataSourceType {
   connectorType?: string;
   pluginName?: string;
 }
+
+type DataSourceRole = "source" | "target" | "all";
+
 // 生成数据源选项配置
-export const generateDataSourceOptions = (): DataSourceType[] => [
+const DATA_SOURCE_OPTIONS: DataSourceType[] = [
   {
     value: "MYSQL",
     connectorType: "Jdbc",
@@ -48,7 +51,28 @@ export const generateDataSourceOptions = (): DataSourceType[] => [
       </div>
     ),
   },
+  {
+    value: "STARROCKS",
+    connectorType: "StarRocks",
+    pluginName: "StarRocks",
+    label: (
+      <div style={{ display: "flex", alignItems: "center" }}>
+        <StarRocksIcon height="24px" width="24px" />
+        <span style={{ marginLeft: 8 }}>StarRocks</span>
+      </div>
+    ),
+  },
 ];
+
+export const generateDataSourceOptions = (
+  role: DataSourceRole = "all"
+): DataSourceType[] => {
+  if (role === "source") {
+    return DATA_SOURCE_OPTIONS.filter((item) => item.value !== "STARROCKS");
+  }
+
+  return DATA_SOURCE_OPTIONS;
+};
 
 export const generateCDCDataSourceOptions = (): DataSourceType[] => [
   {

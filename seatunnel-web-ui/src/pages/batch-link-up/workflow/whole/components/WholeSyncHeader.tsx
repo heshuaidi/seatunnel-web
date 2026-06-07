@@ -48,7 +48,7 @@ const WholeSyncHeader: React.FC<Props> = ({
             placeholder="来源"
             prefix="来源: "
             width="48%"
-            dataSourceOptions={generateDataSourceOptions()}
+            dataSourceOptions={generateDataSourceOptions("source")}
           />
           <div style={{ display: "flex", alignItems: "center", margin: "0 8px" }}>
             <IconRightArrow />
@@ -59,7 +59,7 @@ const WholeSyncHeader: React.FC<Props> = ({
             placeholder="去向"
             prefix="去向: "
             width="48%"
-            dataSourceOptions={generateDataSourceOptions()}
+            dataSourceOptions={generateDataSourceOptions("target")}
           />
         </div>
       </div>

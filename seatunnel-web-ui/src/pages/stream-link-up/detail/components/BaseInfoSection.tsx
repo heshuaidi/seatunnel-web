@@ -52,7 +52,7 @@ const BaseConfigSection: React.FC<Props> = ({
             <DataSourceSelect
               value={targetType}
               onChange={handleTargetChange}
-              dataSourceOptions={generateDataSourceOptions()}
+              dataSourceOptions={generateDataSourceOptions("target")}
               placeholder="请选择去向"
               prefix="去向"
               width="48%"

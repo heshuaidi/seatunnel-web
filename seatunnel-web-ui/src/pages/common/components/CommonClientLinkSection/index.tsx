@@ -495,7 +495,14 @@ const CommonClientLinkSection: React.FC<CommonClientLinkSectionProps> = ({
     target?: string;
   }>({});
 
-  const dataSourceTypeOptions = useMemo(() => generateDataSourceOptions(), []);
+  const sourceDataSourceTypeOptions = useMemo(
+    () => generateDataSourceOptions("source"),
+    []
+  );
+  const targetDataSourceTypeOptions = useMemo(
+    () => generateDataSourceOptions("target"),
+    []
+  );
 
   const [sourceDataSources, setSourceDataSources] = useState<any[]>([]);
   const [targetDataSources, setTargetDataSources] = useState<any[]>([]);
@@ -1198,7 +1205,7 @@ const CommonClientLinkSection: React.FC<CommonClientLinkSectionProps> = ({
                       className="w-full"
                       showSearch
                       placeholder="请选择来源类型"
-                      options={dataSourceTypeOptions}
+                      options={sourceDataSourceTypeOptions}
                     />
                   </Form.Item>
 
@@ -1287,7 +1294,7 @@ const CommonClientLinkSection: React.FC<CommonClientLinkSectionProps> = ({
                       className="w-full"
                       showSearch
                       placeholder="请选择去向类型"
-                      options={dataSourceTypeOptions}
+                      options={targetDataSourceTypeOptions}
                     />
                   </Form.Item>
 

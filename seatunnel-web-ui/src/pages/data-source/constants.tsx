@@ -12,6 +12,7 @@ export const COMMON_DB_OPTIONS: DataSourceOptionItem[] = [
   { label: "MYSQL", value: "MYSQL" },
   { label: "ORACLE", value: "ORACLE" },
   { label: "PGSQL", value: "POSTGRE_SQL" },
+  { label: "StarRocks", value: "STARROCKS" },
 ];
 
 export const ENVIRONMENT_OPTIONS: DataSourceOptionItem[] = [
@@ -41,6 +42,12 @@ export const dataSourceGroupList: DataSourceGroup[] = [
         dbType: "POSTGRE_SQL",
         type: "POSTGRE_SQL",
         connectorType: "Jdbc",
+      },
+      {
+        onlyDiScript: false,
+        dbType: "STARROCKS",
+        type: "STARROCKS",
+        connectorType: "StarRocks",
       },
     ],
   },

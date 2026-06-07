@@ -99,7 +99,7 @@ const RealtimeHeader: React.FC<RealtimeHeaderProps> = ({
               prefix="去向："
               value={sinkType?.dbType}
               onChange={handleSinkChange}
-              options={generateDataSourceOptions()}
+              options={generateDataSourceOptions("target")}
               bordered={false}
               showSearch
               className="flex-1"
