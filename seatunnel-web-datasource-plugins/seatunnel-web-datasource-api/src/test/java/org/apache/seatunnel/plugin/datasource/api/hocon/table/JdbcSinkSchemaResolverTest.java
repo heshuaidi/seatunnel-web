@@ -194,7 +194,7 @@ class JdbcSinkSchemaResolverTest {
                 mysqlConnection("database = test_db"),
                 mysqlMap);
 
-        assertEquals("USER_INFO", oracleMap.get(TABLE));
+        assertEquals("TEST.USER_INFO", oracleMap.get(TABLE));
         assertEquals("user_info", mysqlMap.get(TABLE));
         assertFalse(String.valueOf(oracleMap.get(TABLE)).contains("public."));
         assertFalse(String.valueOf(mysqlMap.get(TABLE)).contains("public."));
