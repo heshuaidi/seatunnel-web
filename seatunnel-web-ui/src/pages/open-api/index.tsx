@@ -10,6 +10,7 @@ import MethodSegmented from "./MethodSegmented";
 import { HttpMethod, useOpenApiData } from "./openapi-parser";
 import "./index.less";
 import {history} from "umi";
+import { withApiBase } from "@/utils/apiBase";
 
 type FilterMethod = "ALL" | HttpMethod;
 
@@ -23,7 +24,7 @@ const methodColorMap: Record<HttpMethod, string> = {
   HEAD: "default",
 };
 
-const OPEN_API_URL = "http://localhost:9527/v3/api-docs";
+const OPEN_API_URL = withApiBase("/v3/api-docs");
 
 const ApiManagementPage: React.FC = () => {
   const { loading, error, title, description, version, controllers, apis } =

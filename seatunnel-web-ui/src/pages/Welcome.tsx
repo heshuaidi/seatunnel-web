@@ -2,6 +2,12 @@ import { PageContainer } from '@ant-design/pro-components';
 import { useModel } from '@umijs/max';
 import { Card, theme } from 'antd';
 import React from 'react';
+import { withFrontendBase } from '@/utils/frontendBase';
+
+const welcomeCardIndexBg = withFrontendBase(
+  '/offline-assets/welcome-card-index-bg.svg',
+);
+const welcomeCardBg = withFrontendBase('/offline-assets/welcome-card-bg.png');
 
 /**
  * 每个单独的卡片，为了复用样式抽成了组件
@@ -49,8 +55,7 @@ const InfoCard: React.FC<{
             padding: '8px 16px 16px 12px',
             color: '#FFF',
             fontWeight: 'bold',
-            backgroundImage:
-              "url('https://gw.alipayobjects.com/zos/bmw-prod/daaf8d50-8e6d-4251-905d-676a24ddfa12.svg')",
+            backgroundImage: `url('${welcomeCardIndexBg}')`,
           }}
         >
           {index}
@@ -106,8 +111,7 @@ const Welcome: React.FC = () => {
             backgroundPosition: '100% -30%',
             backgroundRepeat: 'no-repeat',
             backgroundSize: '274px auto',
-            backgroundImage:
-              "url('https://gw.alipayobjects.com/mdn/rms_a9745b/afts/img/A*BuFmQqsB2iAAAAAAAAAAAAAAARQnAQ')",
+            backgroundImage: `url('${welcomeCardBg}')`,
           }}
         >
           <div

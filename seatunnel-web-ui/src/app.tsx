@@ -15,7 +15,7 @@ import {
 import ThemeSwitch from "./components/RightContent/ThemeSwitch";
 import { errorConfig } from "./requestErrorConfig";
 import { API_BASE, withApiBase } from "./utils/apiBase";
-import { isFrontendPath } from "./utils/frontendBase";
+import { isFrontendPath, withFrontendBase } from "./utils/frontendBase";
 import HttpUtils from "./utils/HttpUtils";
 
 const isDev = process.env.NODE_ENV === "development";
@@ -101,19 +101,19 @@ export const layout: RunTimeLayoutConfig = ({
     },
     bgLayoutImgList: [
       {
-        src: "https://mdn.alipayobjects.com/yuyan_qk0oxh/afts/img/D2LWSqNny4sAAAAAAAAAAAAAFl94AQBr",
+        src: withFrontendBase("/offline-assets/alipay-d2lw.png"),
         left: 85,
         bottom: 100,
         height: "303px",
       },
       {
-        src: "https://mdn.alipayobjects.com/yuyan_qk0oxh/afts/img/C2TWRpJpiC0AAAAAAAAAAAAAFl94AQBr",
+        src: withFrontendBase("/offline-assets/alipay-c2tw.png"),
         bottom: -68,
         right: -45,
         height: "303px",
       },
       {
-        src: "https://mdn.alipayobjects.com/yuyan_qk0oxh/afts/img/F6vSTbj8KpYAAAAAAAAAAAAAFl94AQBr",
+        src: withFrontendBase("/offline-assets/alipay-f6vs.png"),
         bottom: 0,
         left: 0,
         width: "331px",

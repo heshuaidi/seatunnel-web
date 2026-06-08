@@ -100,6 +100,7 @@ export default defineConfig({
    * @doc https://umijs.org/docs/max/layout-menu
    */
   title: "Seatunnel Web",
+  favicons: [join(NORMALIZED_FRONTEND_BASE, "favicon.ico")],
   layout: {
     locale: true,
     ...defaultSettings,

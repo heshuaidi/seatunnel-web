@@ -21,9 +21,15 @@ interface GoogleLoginButtonProps {
 
 const GOOGLE_GSI_SCRIPT_ID = "google-gsi-script";
 const GOOGLE_CLIENT_ID = process.env.UMI_APP_GOOGLE_CLIENT_ID || "";
+const GOOGLE_GSI_SCRIPT_SRC = process.env.UMI_APP_GOOGLE_GSI_SCRIPT_SRC || "";
 
 function loadGoogleScript(): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (!GOOGLE_GSI_SCRIPT_SRC) {
+      reject(new Error("Missing UMI_APP_GOOGLE_GSI_SCRIPT_SRC"));
+      return;
+    }
+
     const existing = document.getElementById(GOOGLE_GSI_SCRIPT_ID);
     if (existing) {
       resolve();
@@ -32,7 +38,7 @@ function loadGoogleScript(): Promise<void> {
 
     const script = document.createElement("script");
     script.id = GOOGLE_GSI_SCRIPT_ID;
-    script.src = "https://accounts.google.com/gsi/client";
+    script.src = GOOGLE_GSI_SCRIPT_SRC;
     script.async = true;
     script.defer = true;
     script.onload = () => resolve();
@@ -68,11 +74,12 @@ const GoogleLoginButton: React.FC<GoogleLoginButtonProps> = ({
   }, [onStart, onSuccess, onError]);
 
   useEffect(() => {
-    if (!GOOGLE_CLIENT_ID) {
-        console.log(process.env)
+    if (!GOOGLE_CLIENT_ID || !GOOGLE_GSI_SCRIPT_SRC) {
       if (!warnedRef.current) {
         warnedRef.current = true;
-        console.warn("Missing UMI_APP_GOOGLE_CLIENT_ID");
+        console.warn(
+          "Missing UMI_APP_GOOGLE_CLIENT_ID or UMI_APP_GOOGLE_GSI_SCRIPT_SRC"
+        );
       }
       return;
     }
@@ -131,8 +138,8 @@ const GoogleLoginButton: React.FC<GoogleLoginButtonProps> = ({
   }, [message]);
 
   const handleClick = () => {
-    if (!GOOGLE_CLIENT_ID) {
-      message.error("Google Client ID is not configured");
+    if (!GOOGLE_CLIENT_ID || !GOOGLE_GSI_SCRIPT_SRC) {
+      message.error("Google login is not configured");
       return;
     }
 

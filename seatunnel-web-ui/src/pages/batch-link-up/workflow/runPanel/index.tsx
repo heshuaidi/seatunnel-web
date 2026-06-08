@@ -1,4 +1,5 @@
 import HttpUtils from '@/utils/HttpUtils';
+import { withApiBase } from '@/utils/apiBase';
 import { Client } from '@stomp/stompjs';
 import type { TabsProps } from 'antd';
 import { Button, Card, Divider, List, message, Progress, Tabs, Tag } from 'antd';
@@ -87,7 +88,7 @@ const WorkflowRunPanel: FC<WorkflowRunPanelProps> = ({
   }, []);
 
   const connectWebSocket = useCallback(() => {
-    const socket = new SockJS('http://localhost:9529/ws');
+    const socket = new SockJS(withApiBase('/ws'));
     const client = new Client({
       webSocketFactory: () => socket,
       reconnectDelay: 5000,

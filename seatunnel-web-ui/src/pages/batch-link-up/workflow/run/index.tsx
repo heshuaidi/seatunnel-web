@@ -5,6 +5,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import SockJS from "sockjs-client";
 import CloseIcon from "../icon/CloseIcon";
 import { seatunnelJobDefinitionApi, seatunnelJobExecuteApi } from "../../api";
+import { withApiBase } from "@/utils/apiBase";
 import "./index.less";
 
 interface RunLogProps {
@@ -91,7 +92,7 @@ type LogEntry = {
 };
 
 const CONNECT_TIMEOUT = 5000;
-const WS_URL = "http://127.0.0.1:9527/ws";
+const WS_URL = withApiBase("/ws");
 const WS_TOPIC = "/topic/log/test";
 
 const RunLog: FC<RunLogProps> = ({
