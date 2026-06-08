@@ -3,6 +3,7 @@ package org.apache.seatunnel.web.core.verify.job;
 import com.typesafe.config.Config;
 import com.typesafe.config.ConfigFactory;
 import jakarta.annotation.Resource;
+import org.apache.seatunnel.plugin.datasource.api.constants.DataSourceConstants;
 import org.apache.seatunnel.plugin.datasource.api.hocon.DataSourceHoconBuilder;
 import org.apache.seatunnel.plugin.datasource.api.hocon.HoconBuildContext;
 import org.apache.seatunnel.plugin.datasource.api.jdbc.DataSourceProcessor;
@@ -57,7 +58,7 @@ public class JdbcConnectivityTestJobDefinitionBuilder implements ConnectivityTes
         DataSourceHoconBuilder sourceBuilder = processor.getQueryBuilder(builderKey);
         JdbcConnectionProvider connectionProvider = processor.getConnectionManager();
 
-        Config sourceNodeConfig = buildMinimalSourceNodeConfig();
+        Config sourceNodeConfig = buildMinimalSourceNodeConfig(dbType);
         Config connectionConfig = ConfigFactory.parseString(datasource.getConnectionParams());
         HoconBuildContext buildContext = HoconBuildContext.builder()
                 .connectionParam(datasource.getConnectionParams())
@@ -79,11 +80,18 @@ public class JdbcConnectivityTestJobDefinitionBuilder implements ConnectivityTes
         return new ConnectivityTestJob(jobName, jobConfig, "hocon", true);
     }
 
-    private Config buildMinimalSourceNodeConfig() {
+    private Config buildMinimalSourceNodeConfig(DbType dbType) {
         Map<String, Object> map = new LinkedHashMap<String, Object>(4);
-        map.put("sql", "select 1 as connectivity_check");
+        map.put("sql", validationQuery(dbType));
         map.put("readMode", "sql");
         return ConfigFactory.parseMap(map);
+    }
+
+    private String validationQuery(DbType dbType) {
+        if (DbType.ORACLE.equals(dbType)) {
+            return DataSourceConstants.ORACLE_VALIDATION_QUERY;
+        }
+        return "select 1 as connectivity_check";
     }
 
     private String buildJobName(Long clientId, Long datasourceId) {

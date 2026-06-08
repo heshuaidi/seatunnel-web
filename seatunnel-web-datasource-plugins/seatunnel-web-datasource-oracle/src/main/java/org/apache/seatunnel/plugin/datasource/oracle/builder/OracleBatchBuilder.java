@@ -2,6 +2,7 @@ package org.apache.seatunnel.plugin.datasource.oracle.builder;
 
 import com.google.auto.service.AutoService;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.seatunnel.plugin.datasource.api.constants.DataSourceConstants;
 import org.apache.seatunnel.plugin.datasource.api.hocon.AbstractJdbcBatchBuilder;
 import org.apache.seatunnel.plugin.datasource.api.hocon.DataSourceHoconBuilder;
 
@@ -44,6 +45,6 @@ public class OracleBatchBuilder extends AbstractJdbcBatchBuilder {
 
     @Override
     protected String defaultDriver() {
-        return null;
+        return DataSourceConstants.COM_ORACLE_JDBC_DRIVER;
     }
 }

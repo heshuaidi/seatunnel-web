@@ -1,5 +1,6 @@
 package org.apache.seatunnel.plugin.datasource.oracle.param;
 
+import org.apache.commons.lang3.StringUtils;
 import org.apache.seatunnel.web.common.utils.JSONUtils;
 import org.apache.seatunnel.plugin.datasource.api.constants.DataSourceConstants;
 import org.apache.seatunnel.plugin.datasource.api.jdbc.JdbcParamConverter;
@@ -13,6 +14,9 @@ public class OracleParamConverter implements JdbcParamConverter {
         OracleConnectionParam oracleConnectionParam = JSONUtils.parseObject(connectionJson, OracleConnectionParam.class);
         assert oracleConnectionParam != null;
         oracleConnectionParam.setUrl(buildUrl(oracleConnectionParam));
+        if (StringUtils.isBlank(oracleConnectionParam.getDriver())) {
+            oracleConnectionParam.setDriver(DataSourceConstants.COM_ORACLE_JDBC_DRIVER);
+        }
         return oracleConnectionParam;
     }
 
