@@ -1,5 +1,23 @@
 import type { ProLayoutProps } from '@ant-design/pro-components';
 
+const normalizeFrontendBase = (base = '/') => {
+  if (!base || base === '/') {
+    return '/';
+  }
+  return `/${base.replace(/^\/+|\/+$/g, '')}/`;
+};
+
+const withFrontendBase = (path: string) => {
+  const base = normalizeFrontendBase(process.env.FRONTEND_BASE);
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+
+  if (base === '/') {
+    return normalizedPath;
+  }
+
+  return `${base.replace(/\/+$/, '')}${normalizedPath}`;
+};
+
 /**
  * @name
  */
@@ -17,7 +35,7 @@ const Settings: ProLayoutProps & {
   colorWeak: false,
   title: 'SeaTunnel Web',
   pwa: true,
-  logo: '/logo.png',
+  logo: withFrontendBase('logo.png'),
   iconfontUrl: '',
   token: {
     // 参见ts声明，demo 见文档，通过token 修改样式
