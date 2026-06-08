@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: seatunnel-web-ui
+  namespace: seatunnel-web
   labels:
     app: seatunnel-web-ui
 spec:
@@ -16,22 +17,9 @@ spec:
     spec:
       containers:
         - name: seatunnel-web-ui
-          image: <harbor-host>/<project>/seatunnel-web-ui:<tag>
+          image: harbor.example.com/data/seatunnel-web-ui:starrocks-test
           imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 80
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: seatunnel-web-ui
-  labels:
-    app: seatunnel-web-ui
-spec:
-  type: ClusterIP
-  selector:
-    app: seatunnel-web-ui
-  ports:
-    - name: http
-      port: 80
-      targetPort: 80
+            - name: http
+              containerPort: 80
+

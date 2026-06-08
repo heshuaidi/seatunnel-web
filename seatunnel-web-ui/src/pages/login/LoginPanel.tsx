@@ -4,6 +4,7 @@ import { App, Button, Checkbox, Form, Input } from "antd";
 import { useForm } from "antd/es/form/Form";
 import React, { useRef, useState } from "react";
 import { flushSync } from "react-dom";
+import { withFrontendBase } from "@/utils/frontendBase";
 import GoogleLoginButton from "./components/GoogleLoginButton";
 import "./index.less";
 import { loginApi } from "./type";
@@ -63,7 +64,7 @@ export default function LoginPanel({
 
   const redirectToHome = () => {
     const urlParams = new URL(window.location.href).searchParams;
-    window.location.href = urlParams.get("redirect") || "/";
+    window.location.href = withFrontendBase(urlParams.get("redirect") || "/");
   };
 
   const handleAccountLogin = async (values: API.LoginParams) => {

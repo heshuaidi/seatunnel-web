@@ -8,10 +8,15 @@ import proxy from "./proxy";
 import routes from "./routes";
 
 const {
+  API_BASE = "",
   FRONTEND_BASE = "/",
   FRONTEND_PUBLIC_PATH = "/",
   REACT_APP_ENV = "dev",
 } = process.env;
+const NORMALIZED_API_BASE = API_BASE.replace(/\/+$/, "");
+const CURRENT_USER_API = `${NORMALIZED_API_BASE}/api/v1/users/currentUser`;
+const NORMALIZED_FRONTEND_BASE =
+  FRONTEND_BASE === "/" ? "/" : `/${FRONTEND_BASE.replace(/^\/+|\/+$/g, "")}/`;
 
 /**
  * @name 使用公共路径
@@ -29,7 +34,9 @@ export default defineConfig({
   hash: true,
 
   define: {
-    "process.env.API_BASE": JSON.stringify(process.env.API_BASE || ""),
+    "process.env.API_BASE": NORMALIZED_API_BASE,
+    "process.env.CURRENT_USER_API": CURRENT_USER_API,
+    "process.env.FRONTEND_BASE": NORMALIZED_FRONTEND_BASE,
   },
 
   base: FRONTEND_BASE,

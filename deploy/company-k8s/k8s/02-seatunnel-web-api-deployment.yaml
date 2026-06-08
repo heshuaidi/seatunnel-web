@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: seatunnel-web-api
+  namespace: seatunnel-web
   labels:
     app: seatunnel-web-api
 spec:
@@ -16,19 +17,26 @@ spec:
     spec:
       containers:
         - name: seatunnel-web-api
-          image: <harbor-host>/<project>/seatunnel-web-api:<tag>
+          image: harbor.example.com/data/seatunnel-web-api:starrocks-test
           imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 8080
+            - name: http
+              containerPort: 9527
           env:
             - name: SERVER_PORT
-              value: "8080"
+              value: "9527"
             - name: SERVER_SERVLET_CONTEXT_PATH
               value: /seatunnel-web-api
-            - name: SPRING_PROFILES_ACTIVE
-              value: mysql
             - name: SPRING_DATASOURCE_URL
-              value: jdbc:mysql://<mysql-host>:3306/seatunnel_web?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=GMT%2B8&allowPublicKeyRetrieval=true
+              valueFrom:
+                configMapKeyRef:
+                  name: seatunnel-web-api-config
+                  key: SPRING_DATASOURCE_URL
+            - name: SPRING_DATASOURCE_DRIVER_CLASS_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: seatunnel-web-api-config
+                  key: SPRING_DATASOURCE_DRIVER_CLASS_NAME
             - name: SPRING_DATASOURCE_USERNAME
               valueFrom:
                 secretKeyRef:
@@ -39,18 +47,4 @@ spec:
                 secretKeyRef:
                   name: seatunnel-web-db
                   key: password
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: seatunnel-web-api
-  labels:
-    app: seatunnel-web-api
-spec:
-  type: ClusterIP
-  selector:
-    app: seatunnel-web-api
-  ports:
-    - name: http
-      port: 80
-      targetPort: 8080
+

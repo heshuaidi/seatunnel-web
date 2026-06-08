@@ -27,6 +27,7 @@ import { createStyles } from "antd-style";
 import React, { useState } from "react";
 import { flushSync } from "react-dom";
 import Settings from "../../../../config/defaultSettings";
+import { withFrontendBase } from "@/utils/frontendBase";
 
 const useStyles = createStyles(({ token }) => {
   return {
@@ -149,7 +150,7 @@ const Login: React.FC = () => {
 
         // 等 currentUser 更新完成后再跳转
         const urlParams = new URL(window.location.href).searchParams;
-        window.location.href = urlParams.get("redirect") || "/";
+        window.location.href = withFrontendBase(urlParams.get("redirect") || "/");
         return;
       }
       setUserLoginState(msg);

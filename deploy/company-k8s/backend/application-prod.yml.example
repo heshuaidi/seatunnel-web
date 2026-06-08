@@ -1,0 +1,12 @@
+server:
+  port: ${SERVER_PORT:9527}
+  servlet:
+    context-path: ${SERVER_SERVLET_CONTEXT_PATH:/seatunnel-web-api}
+
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+    driver-class-name: ${SPRING_DATASOURCE_DRIVER_CLASS_NAME:com.mysql.cj.jdbc.Driver}
+

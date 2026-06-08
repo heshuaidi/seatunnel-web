@@ -1,0 +1,38 @@
+services:
+  seatunnel-web-api:
+    build:
+      context: ../..
+      dockerfile: deploy/local-docker/backend/Dockerfile
+    container_name: seatunnel-web-api
+    restart: unless-stopped
+    ports:
+      - "9527:9527"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      SERVER_PORT: 9527
+      SERVER_SERVLET_CONTEXT_PATH: /seatunnel-web-api
+
+      SPRING_DATASOURCE_URL: jdbc:mysql://host.docker.internal:3307/seatunnel_web?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: 123456
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: com.mysql.cj.jdbc.Driver
+    networks:
+      - seatunnel-web-net
+
+  seatunnel-web-ui:
+    build:
+      context: ../..
+      dockerfile: deploy/local-docker/frontend/Dockerfile
+    container_name: seatunnel-web-ui
+    restart: unless-stopped
+    depends_on:
+      - seatunnel-web-api
+    ports:
+      - "8000:80"
+    networks:
+      - seatunnel-web-net
+
+networks:
+  seatunnel-web-net:
+    driver: bridge

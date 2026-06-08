@@ -2,8 +2,7 @@
 import { openPrettyNotification } from "@/utils/prettyNotification";
 import { history } from "umi";
 import { extend } from "umi-request";
-
-const API_BASE = process.env.API_BASE || "";
+import { withApiBase } from "./apiBase";
 
 const codeMessage: Record<number, string> = {
   10000: "系统未知错误，请反馈给管理员",
@@ -134,7 +133,6 @@ const errorHandler = (error: any): Response | undefined => {
 
 function createClient() {
   return extend({
-    baseURL: API_BASE,
     errorHandler,
     credentials: "include",
   });
@@ -146,7 +144,7 @@ request.interceptors.request.use((url: string, options: any) => {
   const headers = options.headers || {};
 
   return {
-    url,
+    url: withApiBase(url),
     options: {
       ...options,
       headers,
