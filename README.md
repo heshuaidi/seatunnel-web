@@ -11,33 +11,63 @@
 
 ## SeaTunnel Web
 
-**SeaTunnel Web** is a third-party web platform for **Apache SeaTunnel**, built to make it easier to create, configure, and run data pipelines.
+**SeaTunnel Web** is a modern third-party Web UI for **Apache SeaTunnel**, designed to make data synchronization easier, more visual, and more production-friendly.
 
-It provides a visual interface to design pipelines with **DAGs**, manage connectors, configure jobs, and watch tasks in real time. SeaTunnel Web helps data engineers handle both **batch and streaming workflows** without writing complex configuration files by hand.
+It helps users create, configure, run, and monitor SeaTunnel jobs through a clean visual interface, without manually writing complex configuration files from scratch.
 
-The platform focuses on making Apache SeaTunnel easier to use, maintain, and operate in production.
+With SeaTunnel Web, you can build both **batch** and **streaming** data pipelines, manage data sources, configure DAG workflows, submit jobs, view logs, and monitor runtime metrics in one place.
 
-### Key Features
+> The goal of this project is simple: make Apache SeaTunnel easier to use for real-world data integration scenarios.
 
-* **Visual Pipeline Builder**
-  Build pipelines using a simple drag-and-drop DAG interface.
+## ✨ Highlights
 
-* **Connector Management**
-  Set up sources, transforms, and sinks easily.
+* **Visual DAG Pipeline Builder**
+  Build data pipelines with a drag-and-drop visual workflow.
 
-* **Job Control**
-  Create, edit, run, and manage jobs from one place.
+* **Batch & Streaming Sync**
+  Support both offline batch synchronization and real-time streaming jobs.
 
-* **Batch & Streaming Support**
-  Handle both batch and streaming data tasks.
+* **Datasource Management**
+  Manage MySQL, PostgreSQL, Oracle, MySQL CDC and other data connections from the Web UI.
 
-* **Real-Time Monitoring**
-  Watch job status and task history as they run.
+* **Job Creation & Execution**
+  Create, edit, submit, stop, and manage SeaTunnel jobs in one place.
 
-* **Auto Configuration**
-  Generate job configurations automatically from your visual pipeline.
+* **Built-in Metrics Monitoring**
+  View runtime metrics such as read rows, write rows, QPS, and task status without depending on Prometheus.
 
-SeaTunnel Web makes working with Apache SeaTunnel simpler and faster for developers and teams, while being fully independent as a third-party tool.
+* **Runtime Logs & Task History**
+  Check execution logs, job instances, and task history directly from the platform.
+
+* **Auto Configuration Generation**
+  Automatically generate SeaTunnel job configuration from visual pipeline settings.
+
+## 🚀 Why SeaTunnel Web?
+
+Apache SeaTunnel is powerful, but writing and maintaining job configuration files by hand can still be difficult for many users.
+
+SeaTunnel Web provides a visual and practical way to use SeaTunnel, especially for teams that need:
+
+* A Web UI for data synchronization
+* Visual pipeline configuration
+* Easier datasource and connector management
+* Job execution and operation capabilities
+* Real-time monitoring and troubleshooting
+* A smoother experience for both batch and streaming tasks
+
+This project is fully independent as a third-party tool, and focuses on improving the user experience around Apache SeaTunnel.
+
+## 📚 Documentation
+
+For detailed usage guides, examples, and best practices, please visit:
+
+👉 [SeaTunnel Web Documentation](https://doc.seatunnel-web.com/)
+
+## 🖥️ Live Demo
+
+You can try SeaTunnel Web online here:
+
+👉 [Live Demo](http://111.230.213.87:8000)
 
 
 ## 🔥 Join Group
