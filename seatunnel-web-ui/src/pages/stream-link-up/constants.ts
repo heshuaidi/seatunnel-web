@@ -5,6 +5,7 @@ export const sourceOptions = [
   { label: "PostgreSQL", value: "POSTGRESQL", connectorType: "Jdbc" },
   { label: "Kafka", value: "KAFKA", connectorType: "Kafka" },
   { label: "Oracle", value: "ORACLE", connectorType: "Jdbc" },
+  { label: "StarRocks", value: "STARROCKS", connectorType: "StarRocks" },
 ];
 
 export const sinkOptions = [
