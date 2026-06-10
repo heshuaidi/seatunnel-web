@@ -6,8 +6,11 @@ import jakarta.annotation.Resource;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.seatunnel.plugin.datasource.api.hocon.DataSourceHoconBuilder;
 import org.apache.seatunnel.plugin.datasource.api.hocon.HoconBuildContext;
+import org.apache.seatunnel.plugin.datasource.api.hocon.table.JdbcTableMode;
+import org.apache.seatunnel.plugin.datasource.api.hocon.table.JdbcTableNameResolver;
 import org.apache.seatunnel.plugin.datasource.api.utils.DataSourceUtils;
 import org.apache.seatunnel.plugin.datasource.api.jdbc.DataSourceProcessor;
+import org.apache.seatunnel.plugin.datasource.api.modal.DataSourceTableColumn;
 import org.apache.seatunnel.web.common.config.ConfigValidator;
 import org.apache.seatunnel.web.common.config.ReadonlyConfig;
 import org.apache.seatunnel.web.common.enums.HoconBuildStage;
@@ -16,10 +19,14 @@ import org.apache.seatunnel.web.core.time.TimeVariableJdbcSqlRenderService;
 import org.apache.seatunnel.web.dao.entity.DataSource;
 import org.apache.seatunnel.web.dao.repository.DataSourceDao;
 import org.apache.seatunnel.web.spi.bean.dto.config.JobScheduleConfig;
+import org.apache.seatunnel.web.spi.datasource.BaseConnectionParam;
 import org.apache.seatunnel.web.spi.enums.DbType;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 @Component
@@ -34,12 +41,22 @@ public class DataSourceSourceBuilder implements SourceNodeConfigBuilder {
 
     private static final String KEY_SQL = "sql";
     private static final String KEY_WHERE_CONDITION = "where_condition";
+    private static final String KEY_OUTPUT_SCHEMA = "outputSchema";
+    private static final String KEY_SCHEMA = "schema";
+    private static final String KEY_FIELDS = "fields";
+    private static final String KEY_TABLE = "table";
+    private static final String KEY_TABLE_LIST = "table_list";
+    private static final String KEY_TABLE_PATH = "table_path";
+    private static final String KEY_READ_MODE = "read_mode";
+    private static final String READ_MODE_TABLE = "table";
 
     @Resource
     private DataSourceDao dataSourceDao;
 
     @Resource
     private TimeVariableJdbcSqlRenderService timeVariableJdbcSqlRenderService;
+
+    private final JdbcTableNameResolver tableNameResolver = new JdbcTableNameResolver();
 
     @Override
     public String nodeType() {
@@ -55,6 +72,7 @@ public class DataSourceSourceBuilder implements SourceNodeConfigBuilder {
     public Config build(Config data, DagBuildContext dagContext) {
         Config nodeConfig = resolveNodeConfig(data);
         nodeConfig = appendPluginOutputIfNecessary(data, nodeConfig, dagContext);
+        nodeConfig = appendOutputSchemaMetaIfNecessary(data, nodeConfig);
 
         Long dataSourceId = parseDataSourceId(nodeConfig);
         DataSource dataSource = getRequiredDataSource(dataSourceId);
@@ -68,6 +86,8 @@ public class DataSourceSourceBuilder implements SourceNodeConfigBuilder {
         if (!hoconBuilder.supportsSource()) {
             throw new IllegalArgumentException(pluginName + " does not support source side");
         }
+
+        nodeConfig = enrichStarRocksSchemaIfNecessary(nodeConfig, dataSource, dbType, processor);
 
         nodeConfig = renderTimeVariablesIfNecessary(
                 nodeConfig,
@@ -83,6 +103,9 @@ public class DataSourceSourceBuilder implements SourceNodeConfigBuilder {
                 .nodeConfig(nodeConfig)
                 .scheduleConfig(dagContext.getScheduleConfig())
                 .stage(HoconBuildStage.INSTANCE)
+                .dataSourceId(dataSource.getId())
+                .dataSourceName(dataSource.getName())
+                .dbType(dbType.name())
                 .build();
 
         Config sourceConfig = hoconBuilder.buildSourceHocon(buildContext);
@@ -90,6 +113,181 @@ public class DataSourceSourceBuilder implements SourceNodeConfigBuilder {
         validateSourceConfig(processor, pluginName, sourceConfig);
 
         return sourceConfig;
+    }
+
+    private Config appendOutputSchemaMetaIfNecessary(Config data, Config config) {
+        if (data == null || config == null || !data.hasPath("meta." + KEY_OUTPUT_SCHEMA)) {
+            return config;
+        }
+
+        Map<String, Object> extra = new HashMap<>();
+        extra.put(KEY_OUTPUT_SCHEMA, data.getValue("meta." + KEY_OUTPUT_SCHEMA).unwrapped());
+
+        return config.withFallback(ConfigFactory.parseMap(extra)).resolve();
+    }
+
+    private Config enrichStarRocksSchemaIfNecessary(Config config,
+                                                    DataSource dataSource,
+                                                    DbType dbType,
+                                                    DataSourceProcessor processor) {
+        if (dbType != DbType.STARROCKS || config == null || isSqlRead(config)) {
+            return config;
+        }
+
+        List<String> sourceTables = tableNameResolver.resolveSourceTableNames(config);
+        if (sourceTables.isEmpty()) {
+            return config;
+        }
+
+        JdbcTableMode tableMode = tableNameResolver.resolveTableMode(config, sourceTables);
+        if (JdbcTableMode.MULTI == tableMode) {
+            if (hasTableListSchemas(config)) {
+                return config;
+            }
+
+            Map<String, Object> extra = new HashMap<>();
+            extra.put(KEY_TABLE_LIST, buildStarRocksTableListWithSchema(
+                    dataSource,
+                    processor,
+                    sourceTables));
+            return ConfigFactory.parseMap(extra).withFallback(config).resolve();
+        }
+
+        if (hasGlobalSchema(config)) {
+            return config;
+        }
+
+        String table = normalizeStarRocksTable(tableNameResolver.firstTable(sourceTables));
+        if (StringUtils.isBlank(table)) {
+            return config;
+        }
+
+        Map<String, Object> extra = new HashMap<>();
+        extra.put(KEY_SCHEMA, buildStarRocksSchema(
+                listStarRocksColumns(dataSource, processor, table)));
+
+        return ConfigFactory.parseMap(extra).withFallback(config).resolve();
+    }
+
+    private boolean isSqlRead(Config config) {
+        String readMode = firstNonBlank(
+                getTrimmedString(config, "readMode"),
+                getTrimmedString(config, KEY_READ_MODE));
+        String sql = firstNonBlank(
+                getTrimmedString(config, KEY_SQL),
+                getTrimmedString(config, "query"));
+        return "sql".equalsIgnoreCase(readMode) || StringUtils.isNotBlank(sql);
+    }
+
+    private boolean hasGlobalSchema(Config config) {
+        return config.hasPath(KEY_SCHEMA + "." + KEY_FIELDS)
+                || config.hasPath(KEY_OUTPUT_SCHEMA)
+                || config.hasPath(KEY_FIELDS);
+    }
+
+    private boolean hasTableListSchemas(Config config) {
+        if (!config.hasPath(KEY_TABLE_LIST)) {
+            return false;
+        }
+
+        try {
+            List<? extends Config> tableList = config.getConfigList(KEY_TABLE_LIST);
+            if (tableList.isEmpty()) {
+                return false;
+            }
+
+            for (Config item : tableList) {
+                if (!item.hasPath(KEY_SCHEMA + "." + KEY_FIELDS)) {
+                    return false;
+                }
+            }
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private List<Map<String, Object>> buildStarRocksTableListWithSchema(DataSource dataSource,
+                                                                        DataSourceProcessor processor,
+                                                                        List<String> sourceTables) {
+        List<Map<String, Object>> tableList = new ArrayList<>();
+        for (String sourceTable : sourceTables) {
+            String table = normalizeStarRocksTable(sourceTable);
+            if (StringUtils.isBlank(table)) {
+                continue;
+            }
+
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put(KEY_TABLE, table);
+            item.put(KEY_SCHEMA, buildStarRocksSchema(
+                    listStarRocksColumns(dataSource, processor, table)));
+            tableList.add(item);
+        }
+        return tableList;
+    }
+
+    private Map<String, Object> buildStarRocksSchema(List<DataSourceTableColumn> columns) {
+        if (columns == null || columns.isEmpty()) {
+            throw new IllegalArgumentException("StarRocks source schema columns can not be empty");
+        }
+
+        Map<String, Object> fields = new LinkedHashMap<>();
+        for (DataSourceTableColumn column : columns) {
+            if (column == null || StringUtils.isBlank(column.getColumnName())) {
+                continue;
+            }
+
+            fields.put(column.getColumnName(), firstNonBlank(
+                    column.getSourceType(),
+                    column.getColumnType(),
+                    column.getColumnName()));
+        }
+
+        Map<String, Object> schema = new LinkedHashMap<>();
+        schema.put(KEY_FIELDS, fields);
+        return schema;
+    }
+
+    private List<DataSourceTableColumn> listStarRocksColumns(DataSource dataSource,
+                                                             DataSourceProcessor processor,
+                                                             String table) {
+        try {
+            BaseConnectionParam connectionParam = processor
+                    .getParamConverter()
+                    .createConnectionParams(dataSource.getConnectionParams());
+
+            Map<String, Object> request = new HashMap<>();
+            request.put(KEY_READ_MODE, READ_MODE_TABLE);
+            request.put(KEY_TABLE_PATH, table);
+
+            return processor.getMetadataService(connectionParam).listColumns(request);
+        } catch (Exception e) {
+            throw new IllegalArgumentException(
+                    "Failed to resolve StarRocks source schema for table: " + table,
+                    e);
+        }
+    }
+
+    private String normalizeStarRocksTable(String table) {
+        if (StringUtils.isBlank(table)) {
+            return "";
+        }
+
+        String[] parts = StringUtils.split(table.trim(), '.');
+        if (parts == null || parts.length == 0) {
+            return "";
+        }
+
+        return parts[parts.length - 1].trim();
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (StringUtils.isNotBlank(value)) {
+                return value.trim();
+            }
+        }
+        return "";
     }
 
     private Config renderTimeVariablesIfNecessary(Config config,

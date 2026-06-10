@@ -226,20 +226,7 @@ public class ScriptJobDefinitionParser {
             tables.add(normalizeTableName(table));
         }
 
-        if (config.hasPath("table_list")) {
-            try {
-                List<String> tableList = config.getStringList("table_list");
-                if (CollectionUtils.isNotEmpty(tableList)) {
-                    for (String item : tableList) {
-                        if (StringUtils.isNotBlank(item)) {
-                            tables.add(normalizeTableName(item));
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                log.debug("Read source table_list failed", e);
-            }
-        }
+        appendTableListTables(config, tables, "source");
 
         return new ArrayList<>(tables);
     }
@@ -262,7 +249,44 @@ public class ScriptJobDefinitionParser {
             tables.add(normalizeTableName(tablePath));
         }
 
+        appendTableListTables(config, tables, "sink");
+
         return new ArrayList<>(tables);
+    }
+
+    private void appendTableListTables(Config config, Set<String> tables, String blockType) {
+        if (config == null || !config.hasPath("table_list")) {
+            return;
+        }
+
+        try {
+            List<String> tableList = config.getStringList("table_list");
+            if (CollectionUtils.isNotEmpty(tableList)) {
+                for (String item : tableList) {
+                    if (StringUtils.isNotBlank(item)) {
+                        tables.add(normalizeTableName(item));
+                    }
+                }
+                return;
+            }
+        } catch (Exception e) {
+            log.debug("Read {} table_list as string list failed", blockType, e);
+        }
+
+        try {
+            List<? extends Config> tableList = config.getConfigList("table_list");
+            for (Config item : tableList) {
+                String table = safeGetString(item, "table");
+                if (StringUtils.isBlank(table)) {
+                    table = safeGetString(item, "table_path");
+                }
+                if (StringUtils.isNotBlank(table)) {
+                    tables.add(normalizeTableName(table));
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Read {} table_list as object list failed", blockType, e);
+        }
     }
 
     private List<String> extractTablesFromSourceQuery(String query) {

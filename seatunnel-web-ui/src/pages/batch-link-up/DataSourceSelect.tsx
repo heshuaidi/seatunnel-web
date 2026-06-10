@@ -67,10 +67,6 @@ const DATA_SOURCE_OPTIONS: DataSourceType[] = [
 export const generateDataSourceOptions = (
   role: DataSourceRole = "all"
 ): DataSourceType[] => {
-  if (role === "source") {
-    return DATA_SOURCE_OPTIONS.filter((item) => item.value !== "STARROCKS");
-  }
-
   return DATA_SOURCE_OPTIONS;
 };
 

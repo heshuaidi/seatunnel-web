@@ -40,7 +40,7 @@ const DEFAULT_TARGET_DATA_SOURCES: DataSourceType[] = [
 ];
 
 const DEFAULT_SOURCE_DATA_SOURCES: DataSourceType[] =
-  DEFAULT_TARGET_DATA_SOURCES.filter((item) => item !== 'STARROCKS');
+  DEFAULT_TARGET_DATA_SOURCES;
 
 const DataSourceSelector = ({
   type,
@@ -52,7 +52,7 @@ const DataSourceSelector = ({
   const visibleDataSources = (
     dataSources ||
     (type === 'source' ? DEFAULT_SOURCE_DATA_SOURCES : DEFAULT_TARGET_DATA_SOURCES)
-  ).filter((item) => type !== 'source' || item !== 'STARROCKS');
+  );
 
   const renderDataSourceOption = (dataSourceType: DataSourceType) => {
     const config = DATA_SOURCE_CONFIG[dataSourceType];
