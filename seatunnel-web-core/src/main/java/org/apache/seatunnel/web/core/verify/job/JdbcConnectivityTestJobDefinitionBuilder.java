@@ -7,7 +7,7 @@ import org.apache.seatunnel.plugin.datasource.api.constants.DataSourceConstants;
 import org.apache.seatunnel.plugin.datasource.api.hocon.DataSourceHoconBuilder;
 import org.apache.seatunnel.plugin.datasource.api.hocon.HoconBuildContext;
 import org.apache.seatunnel.plugin.datasource.api.jdbc.DataSourceProcessor;
-import org.apache.seatunnel.plugin.datasource.api.jdbc.JdbcConnectionProvider;
+import org.apache.seatunnel.plugin.datasource.api.jdbc.JdbcConfigReaders;
 import org.apache.seatunnel.plugin.datasource.api.utils.DataSourceUtils;
 import org.apache.seatunnel.web.common.enums.HoconBuildStage;
 import org.apache.seatunnel.web.dao.entity.DataSource;
@@ -15,7 +15,11 @@ import org.apache.seatunnel.web.dao.entity.SeaTunnelClient;
 import org.apache.seatunnel.web.spi.enums.DbType;
 import org.springframework.stereotype.Component;
 
-import java.util.*;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Set;
 
 @Component
 public class JdbcConnectivityTestJobDefinitionBuilder implements ConnectivityTestJobDefinitionBuilder {
@@ -51,12 +55,7 @@ public class JdbcConnectivityTestJobDefinitionBuilder implements ConnectivityTes
     public ConnectivityTestJob build(SeaTunnelClient client, DataSource datasource) {
         DbType dbType = datasource.getDbType();
 
-        String builderKey = sourceBuilderResolver.resolveBuilderKey(dbType);
         String hoconPluginName = sourcePluginNameResolver.resolvePluginName(dbType);
-
-        DataSourceProcessor processor = DataSourceUtils.getDatasourceProcessor(dbType);
-        DataSourceHoconBuilder sourceBuilder = processor.getQueryBuilder(builderKey);
-        JdbcConnectionProvider connectionProvider = processor.getConnectionManager();
 
         Config sourceNodeConfig = buildMinimalSourceNodeConfig(dbType);
         Config connectionConfig = ConfigFactory.parseString(datasource.getConnectionParams());
@@ -66,7 +65,7 @@ public class JdbcConnectivityTestJobDefinitionBuilder implements ConnectivityTes
                 .nodeConfig(sourceNodeConfig)
                 .stage(HoconBuildStage.INSTANCE)
                 .build();
-        Config sourcePluginConfig = sourceBuilder.buildSourceHocon(buildContext);
+        Config sourcePluginConfig = buildSourcePluginConfig(dbType, buildContext);
 
         String jobName = buildJobName(client.getId(), datasource.getId());
         String jobConfig = seaTunnelJobConfigAssembler.assemble(
@@ -78,6 +77,68 @@ public class JdbcConnectivityTestJobDefinitionBuilder implements ConnectivityTes
         );
 
         return new ConnectivityTestJob(jobName, jobConfig, "hocon", true);
+    }
+
+    private Config buildSourcePluginConfig(DbType dbType, HoconBuildContext buildContext) {
+        if (DbType.STARROCKS.equals(dbType)) {
+            return buildStarRocksJdbcSourceConfig(buildContext.getConnectionConfig());
+        }
+
+        String builderKey = sourceBuilderResolver.resolveBuilderKey(dbType);
+        DataSourceProcessor processor = DataSourceUtils.getDatasourceProcessor(dbType);
+        DataSourceHoconBuilder sourceBuilder = processor.getQueryBuilder(builderKey);
+        return sourceBuilder.buildSourceHocon(buildContext);
+    }
+
+    private Config buildStarRocksJdbcSourceConfig(Config conn) {
+        Map<String, Object> map = new LinkedHashMap<String, Object>(8);
+
+        String url = firstNonBlank(
+                JdbcConfigReaders.getString(conn, "url", ""),
+                JdbcConfigReaders.getString(conn, "jdbcUrl", ""),
+                buildStarRocksJdbcUrl(conn)
+        );
+        if (isBlank(url)) {
+            throw new IllegalArgumentException("Missing StarRocks JDBC url");
+        }
+
+        String username = firstNonBlank(
+                JdbcConfigReaders.getString(conn, "user", ""),
+                JdbcConfigReaders.getString(conn, "username", "")
+        );
+        if (isBlank(username)) {
+            throw new IllegalArgumentException("Missing StarRocks username");
+        }
+
+        map.put("url", url);
+        map.put("username", username);
+        map.put("driver", firstNonBlank(
+                JdbcConfigReaders.getString(conn, "driver", ""),
+                DataSourceConstants.COM_MYSQL_CJ_JDBC_DRIVER
+        ));
+        map.put("query", validationQuery(DbType.STARROCKS));
+
+        String password = JdbcConfigReaders.getString(conn, "password", "");
+        if (!isBlank(password)) {
+            map.put("password", password);
+        }
+
+        return ConfigFactory.parseMap(map);
+    }
+
+    private String buildStarRocksJdbcUrl(Config conn) {
+        String host = JdbcConfigReaders.getString(conn, "host", "");
+        String database = JdbcConfigReaders.getString(conn, "database", "");
+        String queryPort = firstNonBlank(
+                JdbcConfigReaders.getString(conn, "queryPort", ""),
+                JdbcConfigReaders.getString(conn, "port", "")
+        );
+
+        if (isBlank(host) || isBlank(database) || isBlank(queryPort)) {
+            return "";
+        }
+
+        return DataSourceConstants.JDBC_MYSQL + host.trim() + ":" + queryPort.trim() + "/" + database.trim();
     }
 
     private Config buildMinimalSourceNodeConfig(DbType dbType) {
@@ -92,6 +153,19 @@ public class JdbcConnectivityTestJobDefinitionBuilder implements ConnectivityTes
             return DataSourceConstants.ORACLE_VALIDATION_QUERY;
         }
         return "select 1 as connectivity_check";
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (!isBlank(value)) {
+                return value.trim();
+            }
+        }
+        return "";
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
     }
 
     private String buildJobName(Long clientId, Long datasourceId) {
