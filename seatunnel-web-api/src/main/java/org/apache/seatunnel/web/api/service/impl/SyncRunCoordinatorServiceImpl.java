@@ -7,10 +7,12 @@ import org.apache.seatunnel.web.api.service.SyncAuditService;
 import org.apache.seatunnel.web.api.service.SyncBatchService;
 import org.apache.seatunnel.web.api.service.SyncRunCoordinatorService;
 import org.apache.seatunnel.web.api.service.SyncRunService;
+import org.apache.seatunnel.web.api.service.SyncVerifyService;
 import org.apache.seatunnel.web.api.service.SyncWatermarkService;
 import org.apache.seatunnel.web.api.service.SyncZetaClient;
 import org.apache.seatunnel.web.api.service.model.SyncJobStatusResult;
 import org.apache.seatunnel.web.api.service.model.SyncSubmitJobResult;
+import org.apache.seatunnel.web.api.service.model.VerifyResult;
 import org.apache.seatunnel.web.api.service.model.WatermarkRange;
 import org.apache.seatunnel.web.common.enums.SyncAuditEventType;
 import org.apache.seatunnel.web.common.enums.SyncBatchStatus;
@@ -90,6 +92,9 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
 
     @Resource
     private SyncZetaClient syncZetaClient;
+
+    @Resource
+    private SyncVerifyService syncVerifyService;
 
     @Resource
     private SyncRunProperties syncRunProperties;
@@ -279,8 +284,34 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
             updateBatchStatus(batch, SyncBatchStatus.VERIFYING, null);
             syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
                     SyncAuditEventType.VERIFYING,
-                    "SeaTunnel job success, minimal verification passed in current version",
+                    "SeaTunnel job success, start verification",
                     finalStatus.getRawResponse());
+            VerifyResult verifyResult = syncVerifyService.verifyRun(task, batch, run, variables);
+            syncBatchService.updateMetrics(
+                    batch.getBatchId(),
+                    verifyResult.getSourceCount(),
+                    verifyResult.getSinkCount(),
+                    verifyResult.getErrorCount()
+            );
+            syncRunService.updateMetrics(
+                    run.getRunId(),
+                    verifyResult.getSourceCount(),
+                    verifyResult.getSinkCount(),
+                    verifyResult.getErrorCount()
+            );
+            batch.setSourceCount(verifyResult.getSourceCount());
+            batch.setSinkCount(verifyResult.getSinkCount());
+            batch.setErrorCount(verifyResult.getErrorCount());
+            run.setSourceCount(verifyResult.getSourceCount());
+            run.setSinkCount(verifyResult.getSinkCount());
+            run.setErrorCount(verifyResult.getErrorCount());
+            if (!verifyResult.isPassed() || verifyResult.isHasBlockingFailure()) {
+                throw new ServiceException("Sync verification failed: " + verifyResult.getErrorMessage());
+            }
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.VERIFYING,
+                    "Sync verification passed",
+                    verificationDetail(verifyResult));
 
             boolean watermarkAdvanced = false;
             if (range.isAdvanceWatermark()) {
@@ -471,6 +502,15 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
                 message,
                 detail
         );
+    }
+
+    private Map<String, Object> verificationDetail(VerifyResult verifyResult) {
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("sourceCount", verifyResult.getSourceCount());
+        detail.put("sinkCount", verifyResult.getSinkCount());
+        detail.put("errorCount", verifyResult.getErrorCount());
+        detail.put("checkResultCount", verifyResult.getResults() == null ? 0 : verifyResult.getResults().size());
+        return detail;
     }
 
     private SyncTaskEntity loadTaskByCode(String taskCode) {

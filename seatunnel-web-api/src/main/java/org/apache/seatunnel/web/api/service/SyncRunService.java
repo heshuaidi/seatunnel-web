@@ -22,4 +22,6 @@ public interface SyncRunService {
     Boolean updateGeneratedHocon(String runId, String generatedHocon);
 
     Boolean updateSeatunnelJob(String runId, String seatunnelJobId, String seatunnelJobName);
+
+    Boolean updateMetrics(String runId, Long sourceCount, Long sinkCount, Long errorCount);
 }

@@ -120,6 +120,11 @@ public class SyncBatchServiceImpl extends SyncServiceSupport implements SyncBatc
         return entity;
     }
 
+    @Override
+    public Boolean updateMetrics(String batchId, Long sourceCount, Long sinkCount, Long errorCount) {
+        return syncBatchDao.updateMetrics(batchId, sourceCount, sinkCount, errorCount);
+    }
+
     private String generateBatchId(String taskCode) {
         int random = RANDOM.nextInt(1_000_000);
         return taskCode

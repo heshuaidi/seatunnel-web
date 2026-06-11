@@ -182,6 +182,65 @@ CREATE TABLE IF NOT EXISTS `t_seatunnel_web_sync_audit`
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='通用增量同步审计表';
 
 -- =========================================
+-- 通用增量同步后置校验配置表
+-- =========================================
+CREATE TABLE IF NOT EXISTS `t_seatunnel_web_sync_check_config`
+(
+    `id`                    bigint       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `task_id`               bigint       NOT NULL COMMENT '任务ID',
+    `check_code`            varchar(100) NOT NULL COMMENT '校验编码',
+    `check_name`            varchar(200)          DEFAULT NULL COMMENT '校验名称',
+    `check_type`            varchar(50)  NOT NULL COMMENT '校验类型：SOURCE_COUNT / SINK_COUNT / ERROR_COUNT / CUSTOM_COUNT / CUSTOM_BOOLEAN',
+    `datasource_type`       varchar(30)           DEFAULT NULL COMMENT '数据源类型：SOURCE / SINK / CUSTOM',
+    `datasource_id`         bigint                DEFAULT NULL COMMENT '数据源ID',
+    `sql_text`              mediumtext   NOT NULL COMMENT '校验 SQL 模板',
+    `expected_operator`     varchar(20)           DEFAULT NULL COMMENT '期望比较符：EQ / NE / GT / GE / LT / LE / IS_NULL / IS_NOT_NULL',
+    `expected_value`        varchar(200)          DEFAULT NULL COMMENT '期望值',
+    `compare_to_check_code` varchar(100)          DEFAULT NULL COMMENT '用于比较的校验编码',
+    `fail_on_mismatch`      tinyint(1)   NOT NULL DEFAULT 1 COMMENT '不匹配时是否阻断',
+    `enabled`               tinyint(1)   NOT NULL DEFAULT 1 COMMENT '是否启用',
+    `sort_order`            int                   DEFAULT 0 COMMENT '排序',
+    `description`           varchar(1000)         DEFAULT NULL COMMENT '描述',
+    `create_time`           datetime     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `update_time`           datetime     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_sync_check_code` (`task_id`, `check_code`),
+    KEY                     `idx_sync_check_task_enabled` (`task_id`, `enabled`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='通用增量同步后置校验配置表';
+
+-- =========================================
+-- 通用增量同步后置校验结果表
+-- =========================================
+CREATE TABLE IF NOT EXISTS `t_seatunnel_web_sync_check_result`
+(
+    `id`                     bigint       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `run_id`                 varchar(100) NOT NULL COMMENT '运行ID',
+    `batch_id`               varchar(100)          DEFAULT NULL COMMENT '批次ID',
+    `task_id`                bigint       NOT NULL COMMENT '任务ID',
+    `task_code`              varchar(100)          DEFAULT NULL COMMENT '任务编码',
+    `check_code`             varchar(100) NOT NULL COMMENT '校验编码',
+    `check_name`             varchar(200)          DEFAULT NULL COMMENT '校验名称',
+    `check_type`             varchar(50)  NOT NULL COMMENT '校验类型',
+    `rendered_sql`           mediumtext COMMENT '渲染后的 SQL',
+    `actual_value`           varchar(200)          DEFAULT NULL COMMENT '实际值',
+    `expected_operator`      varchar(20)           DEFAULT NULL COMMENT '期望比较符',
+    `expected_value`         varchar(200)          DEFAULT NULL COMMENT '期望值',
+    `compare_to_check_code`  varchar(100)          DEFAULT NULL COMMENT '用于比较的校验编码',
+    `compare_to_actual_value` varchar(200)         DEFAULT NULL COMMENT '用于比较的实际值',
+    `passed`                 tinyint(1)   NOT NULL COMMENT '是否通过',
+    `fail_on_mismatch`       tinyint(1)   NOT NULL DEFAULT 1 COMMENT '不匹配时是否阻断',
+    `error_message`          mediumtext COMMENT '错误信息',
+    `start_time`             datetime              DEFAULT NULL COMMENT '开始时间',
+    `end_time`               datetime              DEFAULT NULL COMMENT '结束时间',
+    `create_time`            datetime     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (`id`),
+    KEY                      `idx_sync_check_result_run` (`run_id`),
+    KEY                      `idx_sync_check_result_batch` (`batch_id`),
+    KEY                      `idx_sync_check_result_task` (`task_id`),
+    KEY                      `idx_sync_check_result_passed` (`passed`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='通用增量同步后置校验结果表';
+
+-- =========================================
 -- 通用增量同步文件清单表
 -- =========================================
 CREATE TABLE IF NOT EXISTS `t_seatunnel_web_sync_file_item`

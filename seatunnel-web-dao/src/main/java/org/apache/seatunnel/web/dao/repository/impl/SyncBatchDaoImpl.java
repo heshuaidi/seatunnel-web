@@ -65,6 +65,23 @@ public class SyncBatchDaoImpl extends BaseDao<SyncBatchEntity, SyncBatchMapper> 
         ) > 0;
     }
 
+    @Override
+    public boolean updateMetrics(String batchId, Long sourceCount, Long sinkCount, Long errorCount) {
+        if (isBlank(batchId)) {
+            return false;
+        }
+        SyncBatchEntity entity = new SyncBatchEntity();
+        entity.setSourceCount(sourceCount);
+        entity.setSinkCount(sinkCount);
+        entity.setErrorCount(errorCount);
+        entity.setUpdateTime(new Date());
+        return syncBatchMapper.update(
+                entity,
+                new LambdaUpdateWrapper<SyncBatchEntity>()
+                        .eq(SyncBatchEntity::getBatchId, batchId)
+        ) > 0;
+    }
+
     private boolean isBlank(String value) {
         return value == null || value.trim().isEmpty();
     }

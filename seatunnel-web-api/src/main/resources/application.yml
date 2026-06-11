@@ -91,6 +91,7 @@ seatunnel:
   sync:
     poll-interval-ms: 3000
     poll-timeout-ms: 600000
+    check-sql-timeout-seconds: 60
 
   metrics:
     interval-ms: 2000

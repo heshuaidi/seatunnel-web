@@ -75,4 +75,9 @@ public class SyncRunServiceImpl extends SyncServiceSupport implements SyncRunSer
     public Boolean updateSeatunnelJob(String runId, String seatunnelJobId, String seatunnelJobName) {
         return syncRunDao.updateSeatunnelJob(runId, seatunnelJobId, seatunnelJobName);
     }
+
+    @Override
+    public Boolean updateMetrics(String runId, Long sourceCount, Long sinkCount, Long errorCount) {
+        return syncRunDao.updateMetrics(runId, sourceCount, sinkCount, errorCount);
+    }
 }

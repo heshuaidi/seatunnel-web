@@ -16,4 +16,6 @@ public interface SyncRunDao extends IDao<SyncRunEntity> {
     boolean updateGeneratedHocon(String runId, String generatedHocon);
 
     boolean updateSeatunnelJob(String runId, String seatunnelJobId, String seatunnelJobName);
+
+    boolean updateMetrics(String runId, Long sourceCount, Long sinkCount, Long errorCount);
 }

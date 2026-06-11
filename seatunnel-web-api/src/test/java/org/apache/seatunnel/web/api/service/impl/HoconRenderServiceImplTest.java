@@ -43,4 +43,20 @@ class HoconRenderServiceImplTest {
 
         Assertions.assertEquals("where update_time < '2026-06-02 03:04:05'", rendered);
     }
+
+    @Test
+    void renderShouldSupportCheckSqlVariables() {
+        String rendered = service.render(
+                "select count(*) from t where batch_id = '${batch_id}' and update_time >= '${batch_start_time}'",
+                Map.of(
+                        "batch_id", "batch-1",
+                        "batch_start_time", LocalDateTime.of(2026, 6, 1, 0, 0, 0)
+                )
+        );
+
+        Assertions.assertEquals(
+                "select count(*) from t where batch_id = 'batch-1' and update_time >= '2026-06-01 00:00:00'",
+                rendered
+        );
+    }
 }

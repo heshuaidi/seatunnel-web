@@ -105,6 +105,23 @@ public class SyncRunDaoImpl extends BaseDao<SyncRunEntity, SyncRunMapper> implem
         ) > 0;
     }
 
+    @Override
+    public boolean updateMetrics(String runId, Long sourceCount, Long sinkCount, Long errorCount) {
+        if (isBlank(runId)) {
+            return false;
+        }
+        SyncRunEntity entity = new SyncRunEntity();
+        entity.setSourceCount(sourceCount);
+        entity.setSinkCount(sinkCount);
+        entity.setErrorCount(errorCount);
+        entity.setUpdateTime(new Date());
+        return syncRunMapper.update(
+                entity,
+                new LambdaUpdateWrapper<SyncRunEntity>()
+                        .eq(SyncRunEntity::getRunId, runId)
+        ) > 0;
+    }
+
     private boolean isBlank(String value) {
         return value == null || value.trim().isEmpty();
     }

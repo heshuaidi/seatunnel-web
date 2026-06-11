@@ -29,4 +29,6 @@ public interface SyncBatchService {
             SyncTriggerType triggerType,
             SyncRunMode runMode
     );
+
+    Boolean updateMetrics(String batchId, Long sourceCount, Long sinkCount, Long errorCount);
 }

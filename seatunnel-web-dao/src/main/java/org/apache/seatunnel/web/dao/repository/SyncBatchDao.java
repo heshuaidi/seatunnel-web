@@ -12,4 +12,6 @@ public interface SyncBatchDao extends IDao<SyncBatchEntity> {
     List<SyncBatchEntity> listByTaskId(Long taskId);
 
     boolean updateStatus(String batchId, SyncBatchStatus status, String errorMessage);
+
+    boolean updateMetrics(String batchId, Long sourceCount, Long sinkCount, Long errorCount);
 }
