@@ -5,6 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.seatunnel.web.api.service.HoconRenderService;
 import org.apache.seatunnel.web.api.service.SyncAuditService;
 import org.apache.seatunnel.web.api.service.SyncBatchService;
+import org.apache.seatunnel.web.api.service.SyncFileDiscoveryService;
 import org.apache.seatunnel.web.api.service.SyncRunCoordinatorService;
 import org.apache.seatunnel.web.api.service.SyncRunService;
 import org.apache.seatunnel.web.api.service.SyncVerifyService;
@@ -18,12 +19,14 @@ import org.apache.seatunnel.web.common.enums.SyncAuditEventType;
 import org.apache.seatunnel.web.common.enums.SyncBatchStatus;
 import org.apache.seatunnel.web.common.enums.SyncRunMode;
 import org.apache.seatunnel.web.common.enums.SyncRunStatus;
+import org.apache.seatunnel.web.common.enums.SyncSourceType;
 import org.apache.seatunnel.web.common.enums.SyncTaskStatus;
 import org.apache.seatunnel.web.common.enums.SyncTriggerType;
 import org.apache.seatunnel.web.common.utils.JSONUtils;
 import org.apache.seatunnel.web.core.exceptions.ServiceException;
 import org.apache.seatunnel.web.dao.entity.SyncAuditEntity;
 import org.apache.seatunnel.web.dao.entity.SyncBatchEntity;
+import org.apache.seatunnel.web.dao.entity.SyncFileItemEntity;
 import org.apache.seatunnel.web.dao.entity.SyncIncrementalConfigEntity;
 import org.apache.seatunnel.web.dao.entity.SyncRunEntity;
 import org.apache.seatunnel.web.dao.entity.SyncTaskEntity;
@@ -48,6 +51,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.Collections;
 import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -97,6 +101,9 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
     private SyncVerifyService syncVerifyService;
 
     @Resource
+    private SyncFileDiscoveryService syncFileDiscoveryService;
+
+    @Resource
     private SyncRunProperties syncRunProperties;
 
     @Override
@@ -104,8 +111,10 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
         SyncTaskEntity task = loadTaskByCode(taskCode);
         SyncTaskVersionEntity version = loadRunnableVersion(task);
         Map<String, Object> params = request == null ? Map.of() : nullToEmpty(request.getParams());
-        WatermarkRange range = syncWatermarkService.calculateNextRange(task.getId(), params);
         SyncIncrementalConfigEntity config = loadConfig(task.getId());
+        WatermarkRange range = isFileTask(task, config)
+                ? null
+                : syncWatermarkService.calculateNextRange(task.getId(), params);
         Map<String, Object> variables = buildVariables(
                 task,
                 version,
@@ -220,6 +229,9 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
         validateRunnableTask(task);
         SyncTaskVersionEntity version = loadRunnableVersion(task);
         SyncIncrementalConfigEntity config = loadConfig(task.getId());
+        if (isFileTask(task, config)) {
+            return executeFileTask(task, version, config, params, triggerType, runMode, waitForFinish);
+        }
 
         WatermarkRange range = null;
         SyncBatchEntity batch = null;
@@ -381,6 +393,188 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
         }
     }
 
+    private RunResultVO executeFileTask(
+            SyncTaskEntity task,
+            SyncTaskVersionEntity version,
+            SyncIncrementalConfigEntity config,
+            Map<String, Object> params,
+            SyncTriggerType triggerType,
+            SyncRunMode runMode,
+            boolean waitForFinish
+    ) {
+        SyncBatchEntity batch = null;
+        SyncRunEntity run = null;
+        List<SyncFileItemEntity> claimedFiles = Collections.emptyList();
+        Map<String, Object> variables = Collections.emptyMap();
+
+        try {
+            syncFileDiscoveryService.discoverFiles(task.getId());
+
+            Date discoveryTime = now();
+            batch = syncBatchService.createFileBatchForRun(task, triggerType, runMode, discoveryTime, discoveryTime);
+            syncAuditService.appendInfo(null, batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.CREATE_BATCH, "File sync batch created", batch);
+
+            updateBatchStatus(batch, SyncBatchStatus.READY, null);
+            auditStatus(null, batch, task, SyncAuditEventType.CREATE_BATCH, "File sync batch is ready", SyncBatchStatus.READY);
+
+            int maxFiles = resolveMaxFiles(config, params);
+            claimedFiles = syncFileDiscoveryService.claimFilesForBatch(task.getId(), batch.getBatchId(), maxFiles);
+            long claimedCount = claimedFiles.size();
+            syncBatchService.updateMetrics(batch.getBatchId(), claimedCount, null, 0L);
+            batch.setSourceCount(claimedCount);
+            batch.setErrorCount(0L);
+
+            run = createRun(task, version, batch, triggerType, params);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.CREATE_RUN, "File sync run created", run);
+            syncRunService.updateMetrics(run.getRunId(), claimedCount, null, 0L);
+            run.setSourceCount(claimedCount);
+            run.setErrorCount(0L);
+
+            if (claimedFiles.isEmpty()) {
+                updateBatchStatus(batch, SyncBatchStatus.SUCCESS, null);
+                updateRunStatus(run, SyncRunStatus.SUCCESS, null);
+                syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                        SyncAuditEventType.RUN_SUCCESS,
+                        "File sync run skipped because no files were claimed",
+                        Map.of("claimedCount", 0, "watermarkAdvanced", false));
+                RunResultVO result = toRunResult(task, version, batch, run, false);
+                result.setRunStatus(SyncRunStatus.SUCCESS.getCode());
+                result.setBatchStatus(SyncBatchStatus.SUCCESS.getCode());
+                return result;
+            }
+
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.RENDER_HOCON, "Start rendering file sync HOCON", null);
+            variables = buildVariables(
+                    task,
+                    version,
+                    run,
+                    batch,
+                    null,
+                    triggerType,
+                    runMode,
+                    config,
+                    params,
+                    claimedFiles
+            );
+            String generatedHocon = hoconRenderService.render(version.getHoconTemplate(), variables);
+            String hoconHash = hoconRenderService.calculateHash(generatedHocon);
+            syncRunService.updateGeneratedHocon(run.getRunId(), generatedHocon);
+            run.setGeneratedHocon(generatedHocon);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.RENDER_HOCON, "File sync HOCON rendered", Map.of("hoconHash", hoconHash));
+
+            String jobName = buildSeatunnelJobName(task, run);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.SUBMIT_JOB, "Start submitting file sync SeaTunnel job", Map.of("jobName", jobName));
+            SyncSubmitJobResult submitResult = syncZetaClient.submitJob(task.getClientId(), jobName, generatedHocon);
+            syncRunService.updateSeatunnelJob(run.getRunId(), submitResult.getJobId(), submitResult.getJobName());
+            run.setSeatunnelJobId(submitResult.getJobId());
+            run.setSeatunnelJobName(submitResult.getJobName());
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.SUBMIT_JOB, "File sync SeaTunnel job submitted", submitResult.getRawResponse());
+
+            updateBatchStatus(batch, SyncBatchStatus.SUBMITTED, null);
+            updateRunStatus(run, SyncRunStatus.SUBMITTED, null);
+            syncFileDiscoveryService.markFilesProcessing(batch.getBatchId(), run.getRunId());
+
+            if (!waitForFinish) {
+                return toRunResult(task, version, batch, run, false);
+            }
+
+            updateBatchStatus(batch, SyncBatchStatus.RUNNING, null);
+            updateRunStatus(run, SyncRunStatus.RUNNING, null);
+
+            SyncJobStatusResult finalStatus = pollUntilFinished(task, batch, run);
+            if (!finalStatus.isSuccess()) {
+                throw new ServiceException("SeaTunnel job failed: " + finalStatus.getStatus()
+                        + (isBlank(finalStatus.getErrorMessage()) ? "" : ", " + finalStatus.getErrorMessage()));
+            }
+
+            updateBatchStatus(batch, SyncBatchStatus.VERIFYING, null);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.VERIFYING,
+                    "File sync SeaTunnel job success, start verification",
+                    finalStatus.getRawResponse());
+            VerifyResult verifyResult = syncVerifyService.verifyRun(task, batch, run, variables);
+            Long sourceCount = firstNonNull(verifyResult.getSourceCount(), claimedCount);
+            Long sinkCount = verifyResult.getSinkCount();
+            Long errorCount = firstNonNull(verifyResult.getErrorCount(), 0L);
+            syncBatchService.updateMetrics(batch.getBatchId(), sourceCount, sinkCount, errorCount);
+            syncRunService.updateMetrics(run.getRunId(), sourceCount, sinkCount, errorCount);
+            batch.setSourceCount(sourceCount);
+            batch.setSinkCount(sinkCount);
+            batch.setErrorCount(errorCount);
+            run.setSourceCount(sourceCount);
+            run.setSinkCount(sinkCount);
+            run.setErrorCount(errorCount);
+            if (!verifyResult.isPassed() || verifyResult.isHasBlockingFailure()) {
+                throw new ServiceException("Sync verification failed: " + verifyResult.getErrorMessage());
+            }
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.VERIFYING,
+                    "File sync verification passed",
+                    verificationDetail(verifyResult));
+
+            syncFileDiscoveryService.markFilesSuccess(batch.getBatchId(), run.getRunId());
+            updateBatchStatus(batch, SyncBatchStatus.SUCCESS, null);
+            updateRunStatus(run, SyncRunStatus.SUCCESS, null);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.RUN_SUCCESS,
+                    "File sync run success",
+                    Map.of("claimedCount", claimedCount, "successCount", claimedCount, "watermarkAdvanced", false));
+
+            RunResultVO result = toRunResult(task, version, batch, run, false);
+            result.setRunStatus(SyncRunStatus.SUCCESS.getCode());
+            result.setBatchStatus(SyncBatchStatus.SUCCESS.getCode());
+            return result;
+        } catch (Exception e) {
+            String message = e.getMessage() == null ? e.toString() : e.getMessage();
+            log.error("File sync run failed, taskCode={}, batchId={}, runId={}",
+                    task.getTaskCode(),
+                    batch == null ? null : batch.getBatchId(),
+                    run == null ? null : run.getRunId(),
+                    e);
+
+            if (batch != null && !claimedFiles.isEmpty()) {
+                syncFileDiscoveryService.markFilesFailed(
+                        batch.getBatchId(),
+                        run == null ? null : run.getRunId(),
+                        message
+                );
+                syncBatchService.updateMetrics(batch.getBatchId(), (long) claimedFiles.size(), null, (long) claimedFiles.size());
+                batch.setSourceCount((long) claimedFiles.size());
+                batch.setErrorCount((long) claimedFiles.size());
+                if (run != null) {
+                    syncRunService.updateMetrics(run.getRunId(), (long) claimedFiles.size(), null, (long) claimedFiles.size());
+                    run.setSourceCount((long) claimedFiles.size());
+                    run.setErrorCount((long) claimedFiles.size());
+                }
+            }
+            if (batch != null) {
+                updateBatchStatus(batch, SyncBatchStatus.FAILED, message);
+            }
+            if (run != null) {
+                updateRunStatus(run, SyncRunStatus.FAILED, message);
+            }
+            syncAuditService.appendError(
+                    run == null ? null : run.getRunId(),
+                    batch == null ? null : batch.getBatchId(),
+                    task.getId(),
+                    task.getTaskCode(),
+                    SyncAuditEventType.RUN_FAILED,
+                    "File sync run failed, file cursor is not advanced",
+                    Map.of("errorMessage", message, "claimedCount", claimedFiles.size())
+            );
+            if (e instanceof ServiceException) {
+                throw (ServiceException) e;
+            }
+            throw new ServiceException(message, e);
+        }
+    }
+
     private SyncRunEntity createRun(
             SyncTaskEntity task,
             SyncTaskVersionEntity version,
@@ -434,6 +628,21 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
             SyncIncrementalConfigEntity config,
             Map<String, Object> params
     ) {
+        return buildVariables(task, version, run, batch, range, triggerType, runMode, config, params, Collections.emptyList());
+    }
+
+    private Map<String, Object> buildVariables(
+            SyncTaskEntity task,
+            SyncTaskVersionEntity version,
+            SyncRunEntity run,
+            SyncBatchEntity batch,
+            WatermarkRange range,
+            SyncTriggerType triggerType,
+            SyncRunMode runMode,
+            SyncIncrementalConfigEntity config,
+            Map<String, Object> params,
+            List<SyncFileItemEntity> batchFiles
+    ) {
         Map<String, Object> variables = new LinkedHashMap<>();
         variables.putAll(params == null ? Map.of() : params);
         variables.put("task_id", task.getId());
@@ -444,17 +653,54 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
         variables.put("batch_id", batch == null ? null : batch.getBatchId());
         variables.put("trigger_type", triggerType.getCode());
         variables.put("run_mode", runMode.getCode());
-        variables.put("last_watermark", lastWatermarkValue(task.getId(), range));
-        variables.put("previous_watermark", previousWatermarkValue(task.getId(), range));
-        variables.put("batch_start_value", range.getStartValue());
-        variables.put("batch_end_value", range.getEndValue());
-        variables.put("batch_start_time", range.getStartTime());
-        variables.put("batch_end_time", range.getEndTime());
+        if (range == null) {
+            variables.put("last_watermark", "");
+            variables.put("previous_watermark", "");
+            variables.put("batch_start_value", "");
+            variables.put("batch_end_value", "");
+            variables.put("batch_start_time", batch == null || batch.getBatchStartTime() == null
+                    ? ""
+                    : batch.getBatchStartTime());
+            variables.put("batch_end_time", batch == null || batch.getBatchEndTime() == null
+                    ? ""
+                    : batch.getBatchEndTime());
+            variables.put("watermark_key", "");
+        } else {
+            variables.put("last_watermark", lastWatermarkValue(task.getId(), range));
+            variables.put("previous_watermark", previousWatermarkValue(task.getId(), range));
+            variables.put("batch_start_value", range.getStartValue());
+            variables.put("batch_end_value", range.getEndValue());
+            variables.put("batch_start_time", range.getStartTime());
+            variables.put("batch_end_time", range.getEndTime());
+            variables.put("watermark_key", range.getWatermarkKey());
+        }
         variables.put("lookback_seconds", config.getLookbackSeconds() == null ? 0 : config.getLookbackSeconds());
         variables.put("biz_date", LocalDate.now().toString());
-        variables.put("watermark_key", range.getWatermarkKey());
-        variables.put("watermark_field", config.getWatermarkField());
+        variables.put("watermark_field", isBlank(config.getWatermarkField()) ? "" : config.getWatermarkField());
+        putFileVariables(variables, config, batchFiles);
         return variables;
+    }
+
+    private void putFileVariables(
+            Map<String, Object> variables,
+            SyncIncrementalConfigEntity config,
+            List<SyncFileItemEntity> batchFiles
+    ) {
+        List<SyncFileItemEntity> files = batchFiles == null ? Collections.emptyList() : batchFiles;
+        String filePattern = isBlank(config.getFilePattern()) ? "" : config.getFilePattern();
+        variables.put("file_path", isBlank(config.getFilePath()) ? "" : config.getFilePath());
+        variables.put("file_pattern", filePattern);
+        variables.put("file_recursive", Boolean.TRUE.equals(config.getFileRecursive()));
+        variables.put("file_filter_pattern", isBlank(filePattern) ? ".*" : filePattern);
+        variables.put("batch_file_count", files.size());
+        variables.put("batch_file_relative_paths", files.stream()
+                .map(SyncFileItemEntity::getRelativePath)
+                .filter(item -> !isBlank(item))
+                .collect(Collectors.joining(",")));
+        variables.put("batch_file_names", files.stream()
+                .map(SyncFileItemEntity::getFileName)
+                .filter(item -> !isBlank(item))
+                .collect(Collectors.joining(",")));
     }
 
     private String lastWatermarkValue(Long taskId, WatermarkRange range) {
@@ -471,6 +717,45 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
             return watermark.getPreviousValue();
         }
         return range.getStartValue();
+    }
+
+    private boolean isFileTask(SyncTaskEntity task, SyncIncrementalConfigEntity config) {
+        SyncSourceType sourceType = config.getSourceType() == null ? task.getSourceType() : config.getSourceType();
+        return sourceType == SyncSourceType.LOCAL_FILE || sourceType == SyncSourceType.FTP_FILE;
+    }
+
+    private int resolveMaxFiles(SyncIncrementalConfigEntity config, Map<String, Object> params) {
+        Object requestValue = params == null ? null : params.get("maxFiles");
+        if (requestValue != null) {
+            return parsePositiveInt(requestValue, "maxFiles");
+        }
+        if (config.getMaxBatchRows() != null && config.getMaxBatchRows() > 0) {
+            return config.getMaxBatchRows() > Integer.MAX_VALUE
+                    ? Integer.MAX_VALUE
+                    : config.getMaxBatchRows().intValue();
+        }
+        return 1000;
+    }
+
+    private int parsePositiveInt(Object value, String fieldName) {
+        int parsed;
+        if (value instanceof Number) {
+            parsed = ((Number) value).intValue();
+        } else {
+            try {
+                parsed = Integer.parseInt(String.valueOf(value));
+            } catch (NumberFormatException e) {
+                throw new ServiceException("Invalid " + fieldName + ": " + value);
+            }
+        }
+        if (parsed <= 0) {
+            throw new ServiceException(fieldName + " must be positive");
+        }
+        return parsed;
+    }
+
+    private Long firstNonNull(Long value, Long defaultValue) {
+        return value == null ? defaultValue : value;
     }
 
     private void updateBatchStatus(SyncBatchEntity batch, SyncBatchStatus status, String errorMessage) {

@@ -7,6 +7,7 @@ import org.apache.seatunnel.web.common.enums.SyncTriggerType;
 import org.apache.seatunnel.web.dao.entity.SyncBatchEntity;
 import org.apache.seatunnel.web.dao.entity.SyncTaskEntity;
 
+import java.util.Date;
 import java.util.List;
 
 public interface SyncBatchService {
@@ -28,6 +29,14 @@ public interface SyncBatchService {
             WatermarkRange range,
             SyncTriggerType triggerType,
             SyncRunMode runMode
+    );
+
+    SyncBatchEntity createFileBatchForRun(
+            SyncTaskEntity task,
+            SyncTriggerType triggerType,
+            SyncRunMode runMode,
+            Date batchStartTime,
+            Date batchEndTime
     );
 
     Boolean updateMetrics(String batchId, Long sourceCount, Long sinkCount, Long errorCount);

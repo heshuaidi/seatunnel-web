@@ -121,8 +121,53 @@ public class SyncBatchServiceImpl extends SyncServiceSupport implements SyncBatc
     }
 
     @Override
+    public SyncBatchEntity createFileBatchForRun(
+            SyncTaskEntity task,
+            SyncTriggerType triggerType,
+            SyncRunMode runMode,
+            Date batchStartTime,
+            Date batchEndTime
+    ) {
+        requireRunnableBatchRequest(task, triggerType, runMode);
+
+        Date now = now();
+        SyncBatchEntity entity = SyncBatchEntity.builder()
+                .batchId(generateBatchId(task.getTaskCode()))
+                .taskId(task.getId())
+                .taskCode(task.getTaskCode())
+                .triggerType(triggerType)
+                .runMode(runMode)
+                .batchStartTime(batchStartTime)
+                .batchEndTime(batchEndTime)
+                .status(SyncBatchStatus.CREATED)
+                .createTime(now)
+                .updateTime(now)
+                .build();
+
+        syncBatchDao.insert(entity);
+        return entity;
+    }
+
+    @Override
     public Boolean updateMetrics(String batchId, Long sourceCount, Long sinkCount, Long errorCount) {
         return syncBatchDao.updateMetrics(batchId, sourceCount, sinkCount, errorCount);
+    }
+
+    private void requireRunnableBatchRequest(
+            SyncTaskEntity task,
+            SyncTriggerType triggerType,
+            SyncRunMode runMode
+    ) {
+        requireEntity(task, "syncTask");
+        if (isBlank(task.getTaskCode())) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "taskCode");
+        }
+        if (triggerType == null) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "triggerType");
+        }
+        if (runMode == null) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "runMode");
+        }
     }
 
     private String generateBatchId(String taskCode) {

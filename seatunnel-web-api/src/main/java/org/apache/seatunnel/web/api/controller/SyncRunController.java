@@ -3,16 +3,21 @@ package org.apache.seatunnel.web.api.controller;
 import jakarta.annotation.Resource;
 import org.apache.seatunnel.web.api.service.SyncCheckConfigService;
 import org.apache.seatunnel.web.api.service.SyncCheckResultService;
+import org.apache.seatunnel.web.api.service.SyncFileDiscoveryService;
 import org.apache.seatunnel.web.api.service.SyncRunCoordinatorService;
 import org.apache.seatunnel.web.api.service.SyncTaskService;
 import org.apache.seatunnel.web.common.enums.SyncCheckDatasourceType;
 import org.apache.seatunnel.web.common.enums.SyncCheckExpectedOperator;
 import org.apache.seatunnel.web.common.enums.SyncCheckType;
+import org.apache.seatunnel.web.common.enums.SyncFileItemStatus;
+import org.apache.seatunnel.web.api.service.model.FileDiscoveryResult;
 import org.apache.seatunnel.web.core.exceptions.ServiceException;
 import org.apache.seatunnel.web.dao.entity.SyncCheckConfigEntity;
 import org.apache.seatunnel.web.dao.entity.SyncCheckResultEntity;
+import org.apache.seatunnel.web.dao.entity.SyncFileItemEntity;
 import org.apache.seatunnel.web.dao.entity.SyncTaskEntity;
 import org.apache.seatunnel.web.spi.bean.dto.BackfillTaskRequest;
+import org.apache.seatunnel.web.spi.bean.dto.DiscoverFilesRequest;
 import org.apache.seatunnel.web.spi.bean.dto.PreviewHoconRequest;
 import org.apache.seatunnel.web.spi.bean.dto.RunTaskRequest;
 import org.apache.seatunnel.web.spi.bean.dto.SyncCheckConfigRequest;
@@ -22,6 +27,9 @@ import org.apache.seatunnel.web.spi.bean.vo.RunDetailVO;
 import org.apache.seatunnel.web.spi.bean.vo.RunResultVO;
 import org.apache.seatunnel.web.spi.bean.vo.SyncCheckConfigVO;
 import org.apache.seatunnel.web.spi.bean.vo.SyncCheckResultVO;
+import org.apache.seatunnel.web.spi.bean.vo.SyncFileDiscoveryResultVO;
+import org.apache.seatunnel.web.spi.bean.vo.SyncFileItemVO;
+import org.apache.seatunnel.web.spi.bean.vo.SyncFileRetryResultVO;
 import org.apache.seatunnel.web.spi.bean.vo.WatermarkVO;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -29,11 +37,13 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -56,6 +66,9 @@ public class SyncRunController {
 
     @Resource
     private SyncCheckResultService syncCheckResultService;
+
+    @Resource
+    private SyncFileDiscoveryService syncFileDiscoveryService;
 
     @PostMapping("/tasks/{taskCode}/preview-hocon")
     public Result<HoconPreviewVO> previewHocon(
@@ -89,6 +102,64 @@ public class SyncRunController {
     @GetMapping("/tasks/{taskCode}/watermark")
     public Result<List<WatermarkVO>> getWatermark(@PathVariable("taskCode") String taskCode) {
         return Result.buildSuc(syncRunCoordinatorService.getWatermark(taskCode));
+    }
+
+    @PostMapping("/tasks/{taskCode}/discover-files")
+    public Result<SyncFileDiscoveryResultVO> discoverFiles(
+            @PathVariable("taskCode") String taskCode,
+            @RequestBody(required = false) DiscoverFilesRequest request
+    ) {
+        FileDiscoveryResult result = syncFileDiscoveryService.discoverFiles(taskCode);
+        Integer maxFiles = request == null ? null : request.getMaxFiles();
+        return Result.buildSuc(toFileDiscoveryResultVO(result, maxFiles));
+    }
+
+    @GetMapping("/tasks/{taskCode}/files")
+    public Result<List<SyncFileItemVO>> listTaskFiles(
+            @PathVariable("taskCode") String taskCode,
+            @RequestParam(value = "status", required = false) String status,
+            @RequestParam(value = "batchId", required = false) String batchId,
+            @RequestParam(value = "runId", required = false) String runId,
+            @RequestParam(value = "fileName", required = false) String fileName,
+            @RequestParam(value = "filePath", required = false) String filePath
+    ) {
+        SyncTaskEntity task = loadTask(taskCode);
+        SyncFileItemStatus itemStatus = parseNullableEnum(SyncFileItemStatus.class, status, "status");
+        return Result.buildSuc(syncFileDiscoveryService.listFiles(
+                        task.getId(),
+                        itemStatus,
+                        batchId,
+                        runId,
+                        fileName,
+                        filePath
+                )
+                .stream()
+                .map(item -> toFileItemVO(task, item))
+                .collect(Collectors.toList()));
+    }
+
+    @GetMapping("/batches/{batchId}/files")
+    public Result<List<SyncFileItemVO>> listBatchFiles(@PathVariable("batchId") String batchId) {
+        return Result.buildSuc(syncFileDiscoveryService.listFilesByBatchId(batchId)
+                .stream()
+                .map(item -> toFileItemVO(loadTask(item.getTaskId()), item))
+                .collect(Collectors.toList()));
+    }
+
+    @PostMapping("/batches/{batchId}/files/retry")
+    public Result<SyncFileRetryResultVO> retryBatchFiles(@PathVariable("batchId") String batchId) {
+        List<SyncFileItemEntity> before = syncFileDiscoveryService.listFilesByBatchId(batchId);
+        long failedBefore = before.stream()
+                .filter(item -> item.getStatus() == SyncFileItemStatus.FAILED)
+                .count();
+        List<SyncFileItemEntity> files = syncFileDiscoveryService.retryFailedFiles(batchId);
+        SyncFileRetryResultVO vo = new SyncFileRetryResultVO();
+        vo.setBatchId(batchId);
+        vo.setRetryCount((int) failedBefore);
+        vo.setFiles(files.stream()
+                .map(item -> toFileItemVO(loadTask(item.getTaskId()), item))
+                .collect(Collectors.toList()));
+        return Result.buildSuc(vo);
     }
 
     @GetMapping("/tasks/{taskCode}/checks")
@@ -146,6 +217,14 @@ public class SyncRunController {
         SyncTaskEntity task = syncTaskService.getByTaskCode(taskCode);
         if (task == null) {
             throw new ServiceException("Sync task not found, taskCode=" + taskCode);
+        }
+        return task;
+    }
+
+    private SyncTaskEntity loadTask(Long taskId) {
+        SyncTaskEntity task = syncTaskService.getById(taskId);
+        if (task == null) {
+            throw new ServiceException("Sync task not found, taskId=" + taskId);
         }
         return task;
     }
@@ -221,6 +300,54 @@ public class SyncRunController {
         vo.setStartTime(formatDate(entity.getStartTime()));
         vo.setEndTime(formatDate(entity.getEndTime()));
         vo.setCreateTime(formatDate(entity.getCreateTime()));
+        return vo;
+    }
+
+    private SyncFileDiscoveryResultVO toFileDiscoveryResultVO(FileDiscoveryResult result, Integer maxFiles) {
+        SyncFileDiscoveryResultVO vo = new SyncFileDiscoveryResultVO();
+        vo.setTaskId(result.getTaskId());
+        vo.setTaskCode(result.getTaskCode());
+        vo.setSourceType(result.getSourceType() == null ? null : result.getSourceType().getCode());
+        vo.setStrategy(result.getStrategy() == null ? null : result.getStrategy().getCode());
+        vo.setFilePath(result.getFilePath());
+        vo.setFilePattern(result.getFilePattern());
+        vo.setDiscoveredCount(result.getDiscoveredCount());
+        vo.setSkippedCount(result.getSkippedCount());
+        vo.setFailedCount(result.getFailedCount());
+        vo.setMessage(result.getMessage());
+        List<SyncFileItemEntity> files = result.getDiscoveredFiles() == null
+                ? Collections.emptyList()
+                : result.getDiscoveredFiles();
+        if (maxFiles != null && maxFiles > 0 && files.size() > maxFiles) {
+            files = files.subList(0, maxFiles);
+        }
+        SyncTaskEntity task = loadTask(result.getTaskId());
+        vo.setDiscoveredFiles(files.stream()
+                .map(item -> toFileItemVO(task, item))
+                .collect(Collectors.toList()));
+        return vo;
+    }
+
+    private SyncFileItemVO toFileItemVO(SyncTaskEntity task, SyncFileItemEntity entity) {
+        SyncFileItemVO vo = new SyncFileItemVO();
+        vo.setId(entity.getId());
+        vo.setTaskId(entity.getTaskId());
+        vo.setTaskCode(task == null ? null : task.getTaskCode());
+        vo.setBatchId(entity.getBatchId());
+        vo.setRunId(entity.getRunId());
+        vo.setSourceType(entity.getSourceType() == null ? null : entity.getSourceType().getCode());
+        vo.setFileSystem(entity.getFileSystem() == null ? null : entity.getFileSystem().getCode());
+        vo.setFilePath(entity.getFilePath());
+        vo.setFileName(entity.getFileName());
+        vo.setRelativePath(entity.getRelativePath());
+        vo.setFileSize(entity.getFileSize());
+        vo.setLastModifiedTime(formatDate(entity.getLastModifiedTime()));
+        vo.setChecksum(entity.getChecksum());
+        vo.setDiscoveredTime(formatDate(entity.getDiscoveredTime()));
+        vo.setStatus(entity.getStatus() == null ? null : entity.getStatus().getCode());
+        vo.setErrorMessage(entity.getErrorMessage());
+        vo.setCreateTime(formatDate(entity.getCreateTime()));
+        vo.setUpdateTime(formatDate(entity.getUpdateTime()));
         return vo;
     }
 

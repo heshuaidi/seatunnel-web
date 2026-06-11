@@ -104,6 +104,41 @@ seatunnel-web-api/src/main/resources/sql/seatunnel_sync_control_mysql.sql
 - XXL-JOB 调度入口。
 - 复杂 DAG。
 
+## 第四阶段范围
+
+第四阶段实现 LocalFile/FtpFile 文件类增量 source 的 manifest 控制面第一版。
+
+新增能力：
+
+- `source_type = LOCAL_FILE / FTP_FILE` 且 `strategy = FILE_MANIFEST / FILE_MTIME` 的任务进入文件类运行路径。
+- LocalFile 使用 Java NIO 扫描本地路径，NAS 挂载目录按本地目录处理。
+- 扫描结果写入 `t_seatunnel_web_sync_file_item`，状态初始为 `DISCOVERED`。
+- 根据 `file_cursor_mode` 判断文件版本是否已存在：
+  - `MTIME`：`file_path + last_modified_time`
+  - `PATH_MTIME_SIZE`：`file_path + file_size + last_modified_time`
+  - `MANIFEST`：同 `PATH_MTIME_SIZE`，并以 manifest 状态作为控制面依据
+  - `CHECKSUM`：枚举保留，本阶段抛出 `Unsupported file cursor mode: CHECKSUM`
+- 运行时先 discover，再创建 batch，并将本批文件 claim 为 `CLAIMED`。
+- 提交 SeaTunnel 成功后将本批文件标记为 `PROCESSING`。
+- SeaTunnel job success 且 verification passed 后将本批文件标记为 `SUCCESS`。
+- SeaTunnel job failed、verification failed 或运行异常时将本批文件标记为 `FAILED`，且不推进任何文件 cursor。
+- 提供 manifest 查询、发现和 batch 级 failed retry API。
+
+第四阶段仍不包含：
+
+- 前端页面。
+- XXL-JOB 调度入口。
+- 复杂 DAG。
+- 自定义 SeaTunnel Source。
+- 精确文件列表传入 SeaTunnel 的自定义插件。
+- WAT/CP 业务专用文件解析。
+
+FTP_FILE 当前只提供 scanner 接口和明确失败的骨架实现。仓库当前没有统一 FTP/SFTP datasource client 可复用，因此 `FtpSyncRemoteFileScanner` 会抛出：
+
+```text
+FTP file discovery is not implemented because no reusable FTP datasource client was found
+```
+
 ## HOCON 模板变量
 
 模板使用 `${xxx}` 形式引用变量。变量缺失时会抛出异常，不会静默替换为空。时间类型统一格式化为：
@@ -132,8 +167,29 @@ yyyy-MM-dd HH:mm:ss
 - `${biz_date}`
 - `${watermark_key}`
 - `${watermark_field}`
+- `${file_path}`
+- `${file_pattern}`
+- `${file_recursive}`
+- `${file_filter_pattern}`
+- `${batch_file_count}`
+- `${batch_file_relative_paths}`
+- `${batch_file_names}`
 
 接口请求里的 `params` 会合并进模板变量，可用于传入 `${batchEndValue}`、`${tenant}` 等业务变量。
+
+文件类任务推荐使用标准 LocalFile/FtpFile 的 path 和 pattern 变量，例如：
+
+```hocon
+source {
+  LocalFile {
+    path = "${file_path}"
+    file_filter_pattern = "${file_filter_pattern}"
+    file_format_type = "json"
+  }
+}
+```
+
+当前 manifest 是 seatunnel-web 的控制面记录。SeaTunnel 标准 LocalFile/FtpFile 仍通过 HOCON 中的 `path`、`file_filter_pattern` 等参数读取文件，本阶段不保证将 batch 的精确文件列表传入 SeaTunnel。生产要做到精确单文件或精确 batch 文件处理，后续可以扩展为为每个 batch 生成临时目录或 symlink 目录、生成 batch file list，或实现自定义 `FileManifestSource`。
 
 ## UPDATE_TIME_RANGE 规则
 
@@ -162,6 +218,8 @@ yyyy-MM-dd HH:mm:ss
 
 ## 正常运行流程
 
+JDBC/SQL 任务运行流程：
+
 1. 根据 `taskCode` 查询任务。
 2. 校验任务状态为 `PUBLISHED`。
 3. 读取 `current_version_id` 对应的 HOCON 模板版本。
@@ -184,6 +242,59 @@ yyyy-MM-dd HH:mm:ss
 - `run.status = FAILED`
 - `error_message` 写入校验失败信息
 - watermark 不推进
+
+LocalFile/FtpFile 文件类任务运行流程：
+
+1. 根据任务增量配置扫描文件。
+2. 按 `file_cursor_mode` 和已有 manifest 状态去重。
+3. 新文件写入 `t_seatunnel_web_sync_file_item`，状态为 `DISCOVERED`。
+4. 创建 batch，文件类 batch 的 `batch_start_value` 和 `batch_end_value` 为空。
+5. 将本批要处理的 `DISCOVERED / FAILED` 文件 claim 为 `CLAIMED`。
+6. 创建 run。
+7. 渲染 HOCON，写入 `generated_hocon`。
+8. 提交 SeaTunnel，保存 job id/name。
+9. 将本批文件标记为 `PROCESSING`。
+10. 轮询 job 状态。
+11. SeaTunnel job 成功后执行 verification。
+12. verification passed 后将本批文件标记为 `SUCCESS`，并标记 batch/run 成功。
+13. SeaTunnel job failed、verification failed 或异常时将本批文件标记为 `FAILED`，并标记 batch/run 失败。
+
+文件类任务不推进 `t_seatunnel_web_sync_watermark`。本批 `source_count` 第一版使用 claimed file count。
+
+`t_seatunnel_web_sync_file_item` 状态流转：
+
+```text
+DISCOVERED
+  -> CLAIMED
+  -> PROCESSING
+  -> SUCCESS
+
+DISCOVERED / CLAIMED / PROCESSING
+  -> FAILED
+```
+
+重复发现规则：
+
+- 同一 task 下，同一文件 identity 已经 `SUCCESS`，扫描时跳过。
+- 已经 `DISCOVERED / CLAIMED / PROCESSING`，扫描时不重复插入。
+- 已经 `FAILED`，后续 run 或 batch retry 可以重新 claim。
+- 同一路径文件 size/mtime 变化，按新版本文件插入。
+
+LocalFile scanner 规则：
+
+- `file_path` 为空会抛出清晰异常。
+- `file_path` 不存在或不是目录会抛出清晰异常。
+- `file_recursive = true` 时递归扫描，否则只扫描顶层普通文件。
+- 只记录普通文件，忽略目录。
+- `file_pattern` 为空时匹配全部普通文件。
+- `file_pattern` 有值时按正则优先匹配 relative path，不匹配再匹配 file name。
+- `last_modified_time` 按 `file_timezone` 转换；为空时使用系统默认时区。
+
+`FILE_MANIFEST` 和 `FILE_MTIME` 的区别：
+
+- `FILE_MTIME` 强调基于文件修改时间/大小的增量发现。
+- `FILE_MANIFEST` 强调以 `t_seatunnel_web_sync_file_item` 作为控制面清单，运行状态、失败重试和审计都以 manifest 为准。
+- 当前两者在文件 identity 计算上可使用相同规则，区别主要体现在运维语义和后续精确文件处理扩展。
 
 ## 补数流程
 
@@ -274,6 +385,10 @@ POST /api/v1/sync/tasks/{taskCode}/run
 POST /api/v1/sync/tasks/{taskCode}/backfill
 GET  /api/v1/sync/runs/{runId}
 GET  /api/v1/sync/tasks/{taskCode}/watermark
+POST /api/v1/sync/tasks/{taskCode}/discover-files
+GET  /api/v1/sync/tasks/{taskCode}/files
+GET  /api/v1/sync/batches/{batchId}/files
+POST /api/v1/sync/batches/{batchId}/files/retry
 GET  /api/v1/sync/tasks/{taskCode}/checks
 POST /api/v1/sync/tasks/{taskCode}/checks
 PUT  /api/v1/sync/tasks/{taskCode}/checks/{checkCode}
@@ -315,6 +430,22 @@ HOCON 预览请求示例：
   }
 }
 ```
+
+文件发现请求示例：
+
+```json
+{
+  "maxFiles": 1000
+}
+```
+
+文件查询支持以下 query 参数：
+
+- `status`
+- `batchId`
+- `runId`
+- `fileName`
+- `filePath`
 
 source_count 配置示例：
 
@@ -374,10 +505,10 @@ error_count 配置示例：
 
 后续建议按以下方向扩展：
 
-- LocalFile/FtpFile manifest 扫描和文件状态流转。
-- 文件增量任务运行闭环。
 - 前端运行历史和 watermark 页面。
 - 前端 check 配置和 check 结果页面。
+- 前端 file manifest 页面。
 - XXL-JOB 触发入口。
 - Fab MES/SPC translator 模板沉淀。
 - Fab WAT/CP 文件 translator 模板沉淀。
+- source_count_sql/sink_count_sql 的实际配置示例。
