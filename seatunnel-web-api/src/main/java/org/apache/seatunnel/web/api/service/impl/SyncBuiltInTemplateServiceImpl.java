@@ -29,6 +29,7 @@ import org.apache.seatunnel.web.dao.entity.SyncTaskVersionEntity;
 import org.apache.seatunnel.web.dao.entity.SyncWatermarkEntity;
 import org.apache.seatunnel.web.spi.bean.dto.CreateFabLoaderPublishTaskRequest;
 import org.apache.seatunnel.web.spi.bean.dto.CreateFabMesSpcJdbcTaskRequest;
+import org.apache.seatunnel.web.spi.bean.dto.CreateGenericJdbcStarRocksTaskRequest;
 import org.apache.seatunnel.web.spi.bean.vo.CreateTaskFromTemplateResultVO;
 import org.apache.seatunnel.web.spi.bean.vo.SyncBuiltInTemplateVO;
 import org.apache.seatunnel.web.spi.enums.Status;
@@ -55,6 +56,9 @@ public class SyncBuiltInTemplateServiceImpl
     private static final String FAB_LOADER_PUBLISH_TEMPLATE_RESOURCE =
             "sync/templates/fab_loader_publish_xchg_to_stg.conf";
 
+    private static final String GENERIC_JDBC_STARROCKS_TEMPLATE_RESOURCE =
+            "sync/templates/generic_jdbc_sql_to_starrocks_incremental.conf";
+
     private static final String BATCH_ID_MODE_MANUAL_PARAM = "MANUAL_PARAM";
 
     @Resource
@@ -77,7 +81,11 @@ public class SyncBuiltInTemplateServiceImpl
 
     @Override
     public List<SyncBuiltInTemplateVO> listTemplates() {
-        return List.of(fabMesSpcTemplate(false), fabLoaderPublishTemplate(false));
+        return List.of(
+                fabMesSpcTemplate(false),
+                fabLoaderPublishTemplate(false),
+                genericJdbcStarRocksTemplate(false)
+        );
     }
 
     @Override
@@ -87,6 +95,9 @@ public class SyncBuiltInTemplateServiceImpl
         }
         if (FAB_LOADER_PUBLISH_XCHG_TO_STG.equalsIgnoreCase(templateCode)) {
             return fabLoaderPublishTemplate(true);
+        }
+        if (GENERIC_JDBC_SQL_TO_STARROCKS_INCREMENTAL.equalsIgnoreCase(templateCode)) {
+            return genericJdbcStarRocksTemplate(true);
         }
         throw new ServiceException("Unknown sync built-in template: " + templateCode);
     }
@@ -299,6 +310,123 @@ public class SyncBuiltInTemplateServiceImpl
         return result;
     }
 
+    @Override
+    @Transactional
+    public CreateTaskFromTemplateResultVO createTaskFromGenericJdbcStarRocksTemplate(
+            CreateGenericJdbcStarRocksTaskRequest request
+    ) {
+        if (request == null) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "request");
+        }
+        if (isBlank(request.getTaskCode())) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "taskCode");
+        }
+        if (isBlank(request.getTaskName())) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "taskName");
+        }
+        if (request.getClientId() == null) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "clientId");
+        }
+        if (isBlank(request.getStartValue())) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "startValue");
+        }
+        if (isBlank(request.getSourceQuery())) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "sourceQuery");
+        }
+        if (syncTaskService.getByTaskCode(request.getTaskCode()) != null) {
+            throw new ServiceException("Sync task already exists, taskCode=" + request.getTaskCode());
+        }
+
+        SyncIncrementalStrategy strategy = parseEnum(
+                SyncIncrementalStrategy.class,
+                request.getIncrementalStrategy(),
+                SyncIncrementalStrategy.UPDATE_TIME_RANGE,
+                "incrementalStrategy"
+        );
+        if (strategy != SyncIncrementalStrategy.UPDATE_TIME_RANGE && strategy != SyncIncrementalStrategy.ID_RANGE) {
+            throw new ServiceException("Generic JDBC StarRocks template supports UPDATE_TIME_RANGE or ID_RANGE only");
+        }
+        SyncWatermarkValueType watermarkValueType = parseEnum(
+                SyncWatermarkValueType.class,
+                request.getWatermarkFieldType(),
+                strategy == SyncIncrementalStrategy.ID_RANGE
+                        ? SyncWatermarkValueType.LONG
+                        : SyncWatermarkValueType.DATETIME,
+                "watermarkFieldType"
+        );
+
+        SyncTaskEntity task = SyncTaskEntity.builder()
+                .taskCode(request.getTaskCode())
+                .taskName(request.getTaskName())
+                .taskType(SyncTaskType.BATCH)
+                .sourceType(SyncSourceType.SQL)
+                .sinkType(SyncSinkType.STARROCKS)
+                .engineType(SyncEngineType.ZETA)
+                .clientId(request.getClientId())
+                .incrementalEnabled(true)
+                .incrementalStrategy(strategy)
+                .status(SyncTaskStatus.PUBLISHED)
+                .description(request.getDescription())
+                .build();
+        Long taskId = syncTaskService.create(task);
+        task.setId(taskId);
+
+        String hoconTemplate = instantiateGenericJdbcStarRocksTemplate(loadGenericJdbcStarRocksTemplate(), request);
+        SyncTaskVersionEntity version = SyncTaskVersionEntity.builder()
+                .taskId(taskId)
+                .versionNo(1)
+                .hoconTemplate(hoconTemplate)
+                .hoconHash(hoconRenderService.calculateHash(hoconTemplate))
+                .paramSchemaJson(genericJdbcStarRocksParamSchemaJson(strategy, request))
+                .publishStatus(SyncPublishStatus.PUBLISHED)
+                .build();
+        Long versionId = syncTaskVersionService.create(version);
+        version.setId(versionId);
+
+        task.setCurrentVersionId(versionId);
+        syncTaskService.update(task);
+
+        SyncIncrementalConfigEntity incrementalConfig = SyncIncrementalConfigEntity.builder()
+                .taskId(taskId)
+                .sourceType(SyncSourceType.SQL)
+                .strategy(strategy)
+                .watermarkKey(SyncConstants.DEFAULT_WATERMARK_KEY)
+                .watermarkField(defaultWatermarkField(request, strategy))
+                .watermarkFieldType(watermarkValueType)
+                .startValue(request.getStartValue())
+                .lookbackSeconds(request.getLookbackSeconds())
+                .maxBatchSeconds(request.getMaxBatchSeconds())
+                .build();
+        Long incrementalConfigId = syncIncrementalConfigService.create(incrementalConfig);
+
+        SyncWatermarkEntity watermark = SyncWatermarkEntity.builder()
+                .taskId(taskId)
+                .watermarkKey(SyncConstants.DEFAULT_WATERMARK_KEY)
+                .currentValue(request.getStartValue())
+                .currentValueType(watermarkValueType)
+                .build();
+        Long watermarkId = syncWatermarkService.create(watermark);
+
+        List<String> warnings = new ArrayList<>();
+        int createdCheckCount = createGenericJdbcStarRocksChecksIfNeeded(taskId, request, warnings);
+
+        CreateTaskFromTemplateResultVO result = new CreateTaskFromTemplateResultVO();
+        result.setTaskId(taskId);
+        result.setTaskCode(task.getTaskCode());
+        result.setVersionId(versionId);
+        result.setIncrementalConfigId(incrementalConfigId);
+        result.setWatermarkId(watermarkId);
+        result.setCreatedCheckCount(createdCheckCount);
+        result.setWarnings(warnings);
+        result.setNextActions(List.of(
+                "1. Create lab tables from docs/sql/generic_jdbc_sql_incremental_starrocks_lab.sql.",
+                "2. Call preview-hocon with runtime credentials and, for ID_RANGE, batchEndValue.",
+                "3. Call run API and verify run/check/watermark results.",
+                "4. Use backfill API to validate failure-safe watermark behavior before production rollout."
+        ));
+        return result;
+    }
+
     private SyncBuiltInTemplateVO fabMesSpcTemplate(boolean includeTemplate) {
         SyncBuiltInTemplateVO vo = new SyncBuiltInTemplateVO();
         vo.setTemplateCode(FAB_MES_SPC_JDBC_TRANSLATOR);
@@ -336,6 +464,26 @@ public class SyncBuiltInTemplateServiceImpl
         ));
         if (includeTemplate) {
             vo.setHoconTemplate(loadLoaderPublishTemplate());
+        }
+        return vo;
+    }
+
+    private SyncBuiltInTemplateVO genericJdbcStarRocksTemplate(boolean includeTemplate) {
+        SyncBuiltInTemplateVO vo = new SyncBuiltInTemplateVO();
+        vo.setTemplateCode(GENERIC_JDBC_SQL_TO_STARROCKS_INCREMENTAL);
+        vo.setTemplateName("Generic JDBC/SQL to StarRocks Incremental");
+        vo.setDescription("Generic JDBC/SQL incremental batch source to StarRocks sink for testing batch, watermark, audit and verification.");
+        vo.setSourceType(SyncSourceType.SQL.getCode());
+        vo.setSinkType(SyncSinkType.STARROCKS.getCode());
+        vo.setIncrementalStrategy("UPDATE_TIME_RANGE/ID_RANGE");
+        vo.setRequiredVariables(genericJdbcStarRocksRequiredVariables());
+        vo.setDocs(List.of(
+                "docs/generic-jdbc-starrocks-incremental-test.md",
+                "docs/templates/generic_jdbc_sql_to_starrocks_incremental.conf",
+                "docs/sql/generic_jdbc_sql_incremental_starrocks_lab.sql"
+        ));
+        if (includeTemplate) {
+            vo.setHoconTemplate(loadGenericJdbcStarRocksTemplate());
         }
         return vo;
     }
@@ -546,6 +694,78 @@ public class SyncBuiltInTemplateServiceImpl
         return checks.size();
     }
 
+    private int createGenericJdbcStarRocksChecksIfNeeded(
+            Long taskId,
+            CreateGenericJdbcStarRocksTaskRequest request,
+            List<String> warnings
+    ) {
+        boolean enableDefaultChecks = request.getEnableDefaultChecks() == null
+                || Boolean.TRUE.equals(request.getEnableDefaultChecks());
+        if (!enableDefaultChecks) {
+            return 0;
+        }
+        if (request.getSourceDatasourceId() == null || request.getSinkDatasourceId() == null) {
+            warnings.add("sourceDatasourceId or sinkDatasourceId is missing, default checks are skipped.");
+            return 0;
+        }
+
+        String sourceQuery = stripTrailingSemicolon(request.getSourceQuery());
+        String starrocksTable = valueOrDefault(request.getStarrocksTable(), "lab_sink_order");
+        String starrocksErrorTable = valueOrDefault(request.getStarrocksErrorTable(), "lab_sink_order_error");
+        List<SyncCheckConfigEntity> checks = List.of(
+                SyncCheckConfigEntity.builder()
+                        .taskId(taskId)
+                        .checkCode("source_count")
+                        .checkName("Source count")
+                        .checkType(SyncCheckType.SOURCE_COUNT)
+                        .datasourceType(SyncCheckDatasourceType.SOURCE)
+                        .datasourceId(request.getSourceDatasourceId())
+                        .sqlText("SELECT COUNT(*)\nFROM (\n" + sourceQuery + "\n) t")
+                        .expectedOperator(SyncCheckExpectedOperator.GE)
+                        .expectedValue("0")
+                        .failOnMismatch(true)
+                        .enabled(true)
+                        .sortOrder(10)
+                        .description("Counts source rows in the current incremental range.")
+                        .build(),
+                SyncCheckConfigEntity.builder()
+                        .taskId(taskId)
+                        .checkCode("sink_count")
+                        .checkName("Sink count")
+                        .checkType(SyncCheckType.SINK_COUNT)
+                        .datasourceType(SyncCheckDatasourceType.SINK)
+                        .datasourceId(request.getSinkDatasourceId())
+                        .sqlText("SELECT COUNT(*)\nFROM " + starrocksTable + "\nWHERE batch_id = '${batch_id}'")
+                        .expectedOperator(SyncCheckExpectedOperator.EQ)
+                        .compareToCheckCode("source_count")
+                        .failOnMismatch(true)
+                        .enabled(true)
+                        .sortOrder(20)
+                        .description("Compares StarRocks sink rows with source_count.")
+                        .build(),
+                SyncCheckConfigEntity.builder()
+                        .taskId(taskId)
+                        .checkCode("error_count")
+                        .checkName("Error count")
+                        .checkType(SyncCheckType.ERROR_COUNT)
+                        .datasourceType(SyncCheckDatasourceType.SINK)
+                        .datasourceId(request.getSinkDatasourceId())
+                        .sqlText("SELECT COUNT(*)\nFROM " + starrocksErrorTable + "\nWHERE batch_id = '${batch_id}'")
+                        .expectedOperator(SyncCheckExpectedOperator.EQ)
+                        .expectedValue("0")
+                        .failOnMismatch(true)
+                        .enabled(true)
+                        .sortOrder(30)
+                        .description("Fails the run if validation error rows are written.")
+                        .build()
+        );
+
+        for (SyncCheckConfigEntity check : checks) {
+            syncCheckConfigService.create(check);
+        }
+        return checks.size();
+    }
+
     private String instantiateTemplate(String template, CreateFabMesSpcJdbcTaskRequest request) {
         Map<String, String> replacements = new LinkedHashMap<>();
         replacements.put("source_system", valueOrPlaceholder(request.getSourceSystem(), "source_system"));
@@ -584,6 +804,31 @@ public class SyncBuiltInTemplateServiceImpl
         replacements.put("stg_header_table", valueOrDefault(request.getStgHeaderTable(), "eda_stg_measure_header"));
         replacements.put("stg_site_table", valueOrDefault(request.getStgSiteTable(), "eda_stg_measure_site"));
         replacements.put("stg_error_table", valueOrDefault(request.getStgErrorTable(), "eda_stg_measure_error"));
+
+        String renderedTemplate = template;
+        for (Map.Entry<String, String> entry : replacements.entrySet()) {
+            renderedTemplate = renderedTemplate.replace("${" + entry.getKey() + "}", entry.getValue());
+        }
+        return renderedTemplate;
+    }
+
+    private String instantiateGenericJdbcStarRocksTemplate(
+            String template,
+            CreateGenericJdbcStarRocksTaskRequest request
+    ) {
+        Map<String, String> replacements = new LinkedHashMap<>();
+        replacements.put("source_jdbc_url", valueOrPlaceholder(request.getSourceJdbcUrl(), "source_jdbc_url"));
+        replacements.put("source_jdbc_driver", valueOrDefault(request.getSourceJdbcDriver(), "com.mysql.cj.jdbc.Driver"));
+        replacements.put("source_username", valueOrPlaceholder(request.getSourceUsername(), "source_username"));
+        replacements.put("source_password", valueOrPlaceholder(request.getSourcePassword(), "source_password"));
+        replacements.put("source_query", request.getSourceQuery());
+        replacements.put("starrocks_node_urls", valueOrPlaceholder(request.getStarrocksNodeUrls(), "starrocks_node_urls"));
+        replacements.put("starrocks_base_url", valueOrPlaceholder(request.getStarrocksBaseUrl(), "starrocks_base_url"));
+        replacements.put("starrocks_username", valueOrPlaceholder(request.getStarrocksUsername(), "starrocks_username"));
+        replacements.put("starrocks_password", valueOrPlaceholder(request.getStarrocksPassword(), "starrocks_password"));
+        replacements.put("starrocks_database", valueOrPlaceholder(request.getStarrocksDatabase(), "starrocks_database"));
+        replacements.put("starrocks_table", valueOrDefault(request.getStarrocksTable(), "lab_sink_order"));
+        replacements.put("starrocks_error_table", valueOrDefault(request.getStarrocksErrorTable(), "lab_sink_order_error"));
 
         String renderedTemplate = template;
         for (Map.Entry<String, String> entry : replacements.entrySet()) {
@@ -640,6 +885,37 @@ public class SyncBuiltInTemplateServiceImpl
         return JSONUtils.toJsonString(schema);
     }
 
+    private String genericJdbcStarRocksParamSchemaJson(
+            SyncIncrementalStrategy strategy,
+            CreateGenericJdbcStarRocksTaskRequest request
+    ) {
+        Map<String, Object> schema = new LinkedHashMap<>();
+        schema.put("templateCode", GENERIC_JDBC_SQL_TO_STARROCKS_INCREMENTAL);
+        schema.put("description", "Runtime variables required by the generic JDBC/SQL to StarRocks incremental template.");
+        schema.put("incrementalStrategy", strategy.getCode());
+        schema.put("watermarkField", defaultWatermarkField(request, strategy));
+        schema.put("requiredVariables", genericJdbcStarRocksRequiredVariables());
+        schema.put("runtimeVariables", List.of(
+                "batch_id",
+                "run_id",
+                "task_code",
+                "batch_start_time",
+                "batch_end_time",
+                "batch_start_value",
+                "batch_end_value"
+        ));
+        schema.put("idRangeRequiredRunParams", strategy == SyncIncrementalStrategy.ID_RANGE
+                ? List.of("batchEndValue")
+                : List.of());
+        schema.put("sensitiveVariables", List.of(
+                "source_username",
+                "source_password",
+                "starrocks_username",
+                "starrocks_password"
+        ));
+        return JSONUtils.toJsonString(schema);
+    }
+
     private List<String> fabMesSpcRequiredVariables() {
         return List.of(
                 "batch_id",
@@ -687,12 +963,40 @@ public class SyncBuiltInTemplateServiceImpl
         );
     }
 
+    private List<String> genericJdbcStarRocksRequiredVariables() {
+        return List.of(
+                "batch_id",
+                "run_id",
+                "task_code",
+                "source_jdbc_url",
+                "source_jdbc_driver",
+                "source_username",
+                "source_password",
+                "source_query",
+                "batch_start_time",
+                "batch_end_time",
+                "batch_start_value",
+                "batch_end_value",
+                "starrocks_node_urls",
+                "starrocks_base_url",
+                "starrocks_username",
+                "starrocks_password",
+                "starrocks_database",
+                "starrocks_table",
+                "starrocks_error_table"
+        );
+    }
+
     private String loadFabMesSpcTemplate() {
         return loadTemplate(FAB_MES_SPC_TEMPLATE_RESOURCE);
     }
 
     private String loadLoaderPublishTemplate() {
         return loadTemplate(FAB_LOADER_PUBLISH_TEMPLATE_RESOURCE);
+    }
+
+    private String loadGenericJdbcStarRocksTemplate() {
+        return loadTemplate(GENERIC_JDBC_STARROCKS_TEMPLATE_RESOURCE);
     }
 
     private String loadTemplate(String resourcePath) {
@@ -739,5 +1043,15 @@ public class SyncBuiltInTemplateServiceImpl
             result = result.substring(0, result.length() - 1).trim();
         }
         return result;
+    }
+
+    private String defaultWatermarkField(
+            CreateGenericJdbcStarRocksTaskRequest request,
+            SyncIncrementalStrategy strategy
+    ) {
+        if (!isBlank(request.getWatermarkField())) {
+            return request.getWatermarkField();
+        }
+        return strategy == SyncIncrementalStrategy.ID_RANGE ? "id" : "update_time";
     }
 }

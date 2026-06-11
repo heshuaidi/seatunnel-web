@@ -510,6 +510,56 @@ WHERE batch_id = '${xchg_batch_id}'
 
 loader publish 不要求 error count 等于 0。translator 可能把错误记录写入 `xchg_meas_error`，loader 需要把这些错误记录同步到 `eda_stg_measure_error`。
 
+## 第七阶段：JDBC/SQL/StarRocks 增量测试模板
+
+第七阶段先暂停文件类能力，优先补齐 JDBC/SQL/StarRocks 增量 Batch source 管理功能的可测试模板。目标链路是：
+
+```text
+JDBC / SQL source
+  -> batch range / watermark
+  -> HOCON render
+  -> SeaTunnel Zeta submit
+  -> SQL Transform
+  -> StarRocks sink
+  -> check verification
+  -> success advance watermark
+  -> failure keep watermark
+  -> backfill / rerun
+```
+
+新增模板 code：
+
+```text
+GENERIC_JDBC_SQL_TO_STARROCKS_INCREMENTAL
+```
+
+新增文件：
+
+- `docs/templates/generic_jdbc_sql_to_starrocks_incremental.conf`
+- `seatunnel-web-api/src/main/resources/sync/templates/generic_jdbc_sql_to_starrocks_incremental.conf`
+- `docs/sql/generic_jdbc_sql_incremental_starrocks_lab.sql`
+- `docs/generic-jdbc-starrocks-incremental-test.md`
+
+该模板创建 `incremental_enabled = 1` 的 BATCH 任务，支持：
+
+- `UPDATE_TIME_RANGE`
+- `ID_RANGE`
+- JDBC source query
+- StarRocks sink
+- 默认 `source_count / sink_count / error_count` 校验
+
+默认 check 规则：
+
+- `source_count >= 0`
+- `sink_count == source_count`
+- `error_count == 0`
+
+如果 `sourceDatasourceId` 或 `sinkDatasourceId` 为空，create-task 不创建默认 check，并返回 warning：
+
+```text
+sourceDatasourceId or sinkDatasourceId is missing, default checks are skipped.
+```
+
 ## 后端 API
 
 路径按项目现有规范使用 `/api/v1` 前缀：
@@ -528,6 +578,7 @@ GET  /api/v1/sync/templates
 GET  /api/v1/sync/templates/{templateCode}
 POST /api/v1/sync/templates/fab-mes-spc-jdbc/create-task
 POST /api/v1/sync/templates/fab-loader-publish/create-task
+POST /api/v1/sync/templates/generic-jdbc-starrocks/create-task
 GET  /api/v1/sync/tasks/{taskCode}/checks
 POST /api/v1/sync/tasks/{taskCode}/checks
 PUT  /api/v1/sync/tasks/{taskCode}/checks/{checkCode}

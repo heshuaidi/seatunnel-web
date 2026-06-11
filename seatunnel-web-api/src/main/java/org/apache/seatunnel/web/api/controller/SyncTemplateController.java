@@ -4,6 +4,7 @@ import jakarta.annotation.Resource;
 import org.apache.seatunnel.web.api.service.SyncBuiltInTemplateService;
 import org.apache.seatunnel.web.spi.bean.dto.CreateFabLoaderPublishTaskRequest;
 import org.apache.seatunnel.web.spi.bean.dto.CreateFabMesSpcJdbcTaskRequest;
+import org.apache.seatunnel.web.spi.bean.dto.CreateGenericJdbcStarRocksTaskRequest;
 import org.apache.seatunnel.web.spi.bean.entity.Result;
 import org.apache.seatunnel.web.spi.bean.vo.CreateTaskFromTemplateResultVO;
 import org.apache.seatunnel.web.spi.bean.vo.SyncBuiltInTemplateVO;
@@ -45,5 +46,12 @@ public class SyncTemplateController {
             @RequestBody CreateFabLoaderPublishTaskRequest request
     ) {
         return Result.buildSuc(syncBuiltInTemplateService.createTaskFromFabLoaderPublishTemplate(request));
+    }
+
+    @PostMapping("/generic-jdbc-starrocks/create-task")
+    public Result<CreateTaskFromTemplateResultVO> createGenericJdbcStarRocksTask(
+            @RequestBody CreateGenericJdbcStarRocksTaskRequest request
+    ) {
+        return Result.buildSuc(syncBuiltInTemplateService.createTaskFromGenericJdbcStarRocksTemplate(request));
     }
 }

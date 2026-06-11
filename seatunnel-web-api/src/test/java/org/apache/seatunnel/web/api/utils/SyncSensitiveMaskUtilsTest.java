@@ -13,6 +13,8 @@ class SyncSensitiveMaskUtilsTest {
         Map<String, Object> masked = SyncSensitiveMaskUtils.maskMap(Map.of(
                 "username", "etl",
                 "password", "secret",
+                "sourcePassword", "source-secret",
+                "starrocksPassword", "starrocks-secret",
                 "apiToken", "token-value",
                 "nested", Map.of("clientSecret", "secret-value"),
                 "items", List.of(Map.of("accessKey", "key-value"))
@@ -20,6 +22,8 @@ class SyncSensitiveMaskUtilsTest {
 
         Assertions.assertEquals("etl", masked.get("username"));
         Assertions.assertEquals("******", masked.get("password"));
+        Assertions.assertEquals("******", masked.get("sourcePassword"));
+        Assertions.assertEquals("******", masked.get("starrocksPassword"));
         Assertions.assertEquals("******", masked.get("apiToken"));
 
         Map<?, ?> nested = (Map<?, ?>) masked.get("nested");

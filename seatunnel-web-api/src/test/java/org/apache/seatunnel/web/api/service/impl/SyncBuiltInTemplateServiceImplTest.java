@@ -24,6 +24,7 @@ import org.apache.seatunnel.web.dao.entity.SyncTaskVersionEntity;
 import org.apache.seatunnel.web.dao.entity.SyncWatermarkEntity;
 import org.apache.seatunnel.web.spi.bean.dto.CreateFabLoaderPublishTaskRequest;
 import org.apache.seatunnel.web.spi.bean.dto.CreateFabMesSpcJdbcTaskRequest;
+import org.apache.seatunnel.web.spi.bean.dto.CreateGenericJdbcStarRocksTaskRequest;
 import org.apache.seatunnel.web.spi.bean.vo.CreateTaskFromTemplateResultVO;
 import org.apache.seatunnel.web.spi.bean.vo.SyncBuiltInTemplateVO;
 import org.junit.jupiter.api.Assertions;
@@ -73,12 +74,15 @@ class SyncBuiltInTemplateServiceImplTest {
     void listTemplatesShouldReturnFabMesSpcTemplate() {
         List<SyncBuiltInTemplateVO> templates = service.listTemplates();
 
-        Assertions.assertEquals(2, templates.size());
+        Assertions.assertEquals(3, templates.size());
         Assertions.assertTrue(templates.stream()
                 .anyMatch(template -> SyncBuiltInTemplateService.FAB_MES_SPC_JDBC_TRANSLATOR
                         .equals(template.getTemplateCode())));
         Assertions.assertTrue(templates.stream()
                 .anyMatch(template -> SyncBuiltInTemplateService.FAB_LOADER_PUBLISH_XCHG_TO_STG
+                        .equals(template.getTemplateCode())));
+        Assertions.assertTrue(templates.stream()
+                .anyMatch(template -> SyncBuiltInTemplateService.GENERIC_JDBC_SQL_TO_STARROCKS_INCREMENTAL
                         .equals(template.getTemplateCode())));
     }
 
@@ -96,6 +100,16 @@ class SyncBuiltInTemplateServiceImplTest {
 
         Assertions.assertTrue(template.getHoconTemplate().contains("${xchg_batch_id}"));
         Assertions.assertTrue(template.getRequiredVariables().contains("xchg_batch_id"));
+    }
+
+    @Test
+    void getGenericJdbcStarRocksTemplateShouldReturnHoconTemplate() {
+        SyncBuiltInTemplateVO template = service.getTemplate(
+                SyncBuiltInTemplateService.GENERIC_JDBC_SQL_TO_STARROCKS_INCREMENTAL);
+
+        Assertions.assertTrue(template.getHoconTemplate().contains("${source_query}"));
+        Assertions.assertTrue(template.getRequiredVariables().contains("batch_start_time"));
+        Assertions.assertTrue(template.getRequiredVariables().contains("batch_end_value"));
     }
 
     @Test
@@ -216,6 +230,70 @@ class SyncBuiltInTemplateServiceImplTest {
     }
 
     @Test
+    void createGenericUpdateTimeTaskShouldCreateMetadataWithoutChecksWhenDatasourceMissing() {
+        CreateTaskFromTemplateResultVO result =
+                service.createTaskFromGenericJdbcStarRocksTemplate(genericRequest(false, "UPDATE_TIME_RANGE"));
+
+        Assertions.assertEquals(1L, result.getTaskId());
+        Assertions.assertEquals(2L, result.getVersionId());
+        Assertions.assertEquals(3L, result.getIncrementalConfigId());
+        Assertions.assertEquals(4L, result.getWatermarkId());
+        Assertions.assertEquals(0, result.getCreatedCheckCount());
+        Assertions.assertFalse(result.getWarnings().isEmpty());
+        Mockito.verify(checkConfigService, Mockito.never()).create(Mockito.any());
+
+        ArgumentCaptor<SyncTaskEntity> taskCaptor = ArgumentCaptor.forClass(SyncTaskEntity.class);
+        Mockito.verify(taskService).create(taskCaptor.capture());
+        Assertions.assertTrue(taskCaptor.getValue().getIncrementalEnabled());
+        Assertions.assertEquals(SyncSourceType.SQL, taskCaptor.getValue().getSourceType());
+        Assertions.assertEquals(SyncSinkType.STARROCKS, taskCaptor.getValue().getSinkType());
+        Assertions.assertEquals(SyncTaskStatus.PUBLISHED, taskCaptor.getValue().getStatus());
+
+        ArgumentCaptor<SyncTaskVersionEntity> versionCaptor = ArgumentCaptor.forClass(SyncTaskVersionEntity.class);
+        Mockito.verify(versionService).create(versionCaptor.capture());
+        Assertions.assertTrue(versionCaptor.getValue().getHoconTemplate().contains("${batch_start_time}"));
+        Assertions.assertTrue(versionCaptor.getValue().getHoconTemplate().contains("lab_sink_order"));
+        Assertions.assertNotNull(versionCaptor.getValue().getHoconHash());
+
+        ArgumentCaptor<SyncIncrementalConfigEntity> configCaptor =
+                ArgumentCaptor.forClass(SyncIncrementalConfigEntity.class);
+        Mockito.verify(incrementalConfigService).create(configCaptor.capture());
+        Assertions.assertEquals(SyncIncrementalStrategy.UPDATE_TIME_RANGE, configCaptor.getValue().getStrategy());
+        Assertions.assertEquals(SyncWatermarkValueType.DATETIME, configCaptor.getValue().getWatermarkFieldType());
+        Assertions.assertEquals("update_time", configCaptor.getValue().getWatermarkField());
+
+        ArgumentCaptor<SyncWatermarkEntity> watermarkCaptor = ArgumentCaptor.forClass(SyncWatermarkEntity.class);
+        Mockito.verify(watermarkService).create(watermarkCaptor.capture());
+        Assertions.assertEquals("2026-06-01 00:00:00", watermarkCaptor.getValue().getCurrentValue());
+    }
+
+    @Test
+    void createGenericIdRangeTaskShouldCreateMetadataAndDefaultChecks() {
+        CreateTaskFromTemplateResultVO result =
+                service.createTaskFromGenericJdbcStarRocksTemplate(genericRequest(true, "ID_RANGE"));
+
+        Assertions.assertEquals(3, result.getCreatedCheckCount());
+
+        ArgumentCaptor<SyncIncrementalConfigEntity> configCaptor =
+                ArgumentCaptor.forClass(SyncIncrementalConfigEntity.class);
+        Mockito.verify(incrementalConfigService).create(configCaptor.capture());
+        Assertions.assertEquals(SyncIncrementalStrategy.ID_RANGE, configCaptor.getValue().getStrategy());
+        Assertions.assertEquals(SyncWatermarkValueType.LONG, configCaptor.getValue().getWatermarkFieldType());
+        Assertions.assertEquals("id", configCaptor.getValue().getWatermarkField());
+
+        ArgumentCaptor<SyncCheckConfigEntity> checkCaptor = ArgumentCaptor.forClass(SyncCheckConfigEntity.class);
+        Mockito.verify(checkConfigService, Mockito.times(3)).create(checkCaptor.capture());
+        List<SyncCheckConfigEntity> checks = checkCaptor.getAllValues();
+        Assertions.assertEquals("source_count", checks.get(0).getCheckCode());
+        Assertions.assertTrue(checks.get(0).getSqlText().contains("${batch_start_value}"));
+        Assertions.assertEquals("sink_count", checks.get(1).getCheckCode());
+        Assertions.assertEquals("source_count", checks.get(1).getCompareToCheckCode());
+        Assertions.assertEquals(SyncCheckExpectedOperator.EQ, checks.get(1).getExpectedOperator());
+        Assertions.assertEquals("error_count", checks.get(2).getCheckCode());
+        Assertions.assertEquals("0", checks.get(2).getExpectedValue());
+    }
+
+    @Test
     void hoconTemplateShouldRenderWithRuntimeVariablesAndThrowWhenMissing() {
         HoconRenderService renderService = new HoconRenderServiceImpl();
         String template = service.getTemplate(SyncBuiltInTemplateService.FAB_MES_SPC_JDBC_TRANSLATOR).getHoconTemplate();
@@ -244,6 +322,33 @@ class SyncBuiltInTemplateServiceImplTest {
         Map<String, Object> missingVariables = new java.util.LinkedHashMap<>(loaderRenderVariables());
         missingVariables.remove("xchg_batch_id");
         Assertions.assertThrows(ServiceException.class, () -> renderService.render(template, missingVariables));
+    }
+
+    @Test
+    void genericTemplateShouldRenderUpdateTimeAndIdRangeVariables() {
+        service.createTaskFromGenericJdbcStarRocksTemplate(genericRequest(true, "UPDATE_TIME_RANGE"));
+        ArgumentCaptor<SyncTaskVersionEntity> updateVersionCaptor = ArgumentCaptor.forClass(SyncTaskVersionEntity.class);
+        Mockito.verify(versionService).create(updateVersionCaptor.capture());
+
+        HoconRenderService renderService = new HoconRenderServiceImpl();
+        String updateRendered = renderService.render(updateVersionCaptor.getValue().getHoconTemplate(), genericRenderVariables());
+
+        Assertions.assertTrue(updateRendered.contains("2026-06-01 00:00:00"));
+        Assertions.assertTrue(updateRendered.contains("2026-06-01 01:00:00"));
+        Assertions.assertTrue(updateRendered.contains("lab_sink_order"));
+
+        setUp();
+        service.createTaskFromGenericJdbcStarRocksTemplate(genericRequest(true, "ID_RANGE"));
+        ArgumentCaptor<SyncTaskVersionEntity> idVersionCaptor = ArgumentCaptor.forClass(SyncTaskVersionEntity.class);
+        Mockito.verify(versionService).create(idVersionCaptor.capture());
+        String idRendered = renderService.render(idVersionCaptor.getValue().getHoconTemplate(), genericRenderVariables());
+        Assertions.assertTrue(idRendered.contains("id > 0"));
+        Assertions.assertTrue(idRendered.contains("id <= 3"));
+
+        Map<String, Object> missingVariables = new java.util.LinkedHashMap<>(genericRenderVariables());
+        missingVariables.remove("starrocks_password");
+        Assertions.assertThrows(ServiceException.class,
+                () -> renderService.render(idVersionCaptor.getValue().getHoconTemplate(), missingVariables));
     }
 
     private CreateFabMesSpcJdbcTaskRequest request(boolean withDatasource) {
@@ -304,6 +409,46 @@ class SyncBuiltInTemplateServiceImplTest {
         return request;
     }
 
+    private CreateGenericJdbcStarRocksTaskRequest genericRequest(boolean withDatasource, String strategy) {
+        CreateGenericJdbcStarRocksTaskRequest request = new CreateGenericJdbcStarRocksTaskRequest();
+        request.setTaskCode("lab_order_" + strategy.toLowerCase());
+        request.setTaskName("Lab Order " + strategy);
+        request.setClientId(1L);
+        request.setIncrementalStrategy(strategy);
+        if ("ID_RANGE".equals(strategy)) {
+            request.setWatermarkField("id");
+            request.setWatermarkFieldType("LONG");
+            request.setStartValue("0");
+            request.setSourceQuery("SELECT id, biz_no, amount, update_time FROM lab_src_order "
+                    + "WHERE id > ${batch_start_value} AND id <= ${batch_end_value}");
+        } else {
+            request.setWatermarkField("update_time");
+            request.setWatermarkFieldType("DATETIME");
+            request.setStartValue("2026-06-01 00:00:00");
+            request.setLookbackSeconds(0);
+            request.setMaxBatchSeconds(3600);
+            request.setSourceQuery("SELECT id, biz_no, amount, update_time FROM lab_src_order "
+                    + "WHERE update_time >= '${batch_start_time}' AND update_time < '${batch_end_time}'");
+        }
+        request.setSourceJdbcUrl("${source_jdbc_url}");
+        request.setSourceJdbcDriver("com.mysql.cj.jdbc.Driver");
+        request.setSourceUsername("${source_username}");
+        request.setSourcePassword("${source_password}");
+        request.setStarrocksNodeUrls("\"starrocks.lab:8030\"");
+        request.setStarrocksBaseUrl("jdbc:mysql://starrocks.lab:9030/");
+        request.setStarrocksUsername("${starrocks_username}");
+        request.setStarrocksPassword("${starrocks_password}");
+        request.setStarrocksDatabase("st_test");
+        request.setStarrocksTable("lab_sink_order");
+        request.setStarrocksErrorTable("lab_sink_order_error");
+        request.setEnableDefaultChecks(true);
+        if (withDatasource) {
+            request.setSourceDatasourceId(10L);
+            request.setSinkDatasourceId(20L);
+        }
+        return request;
+    }
+
     private Map<String, Object> renderVariables() {
         Map<String, Object> variables = new java.util.LinkedHashMap<>();
         variables.put("batch_id", "batch_1");
@@ -348,6 +493,29 @@ class SyncBuiltInTemplateServiceImplTest {
         variables.put("stg_header_table", "eda_stg_measure_header");
         variables.put("stg_site_table", "eda_stg_measure_site");
         variables.put("stg_error_table", "eda_stg_measure_error");
+        return variables;
+    }
+
+    private Map<String, Object> genericRenderVariables() {
+        Map<String, Object> variables = new java.util.LinkedHashMap<>();
+        variables.put("batch_id", "batch_1");
+        variables.put("run_id", "run_1");
+        variables.put("task_code", "lab_order_sync");
+        variables.put("source_jdbc_url", "jdbc:mysql://starrocks.lab:9030/st_test");
+        variables.put("source_jdbc_driver", "com.mysql.cj.jdbc.Driver");
+        variables.put("source_username", "st_lab");
+        variables.put("source_password", "secret");
+        variables.put("batch_start_time", "2026-06-01 00:00:00");
+        variables.put("batch_end_time", "2026-06-01 01:00:00");
+        variables.put("batch_start_value", "0");
+        variables.put("batch_end_value", "3");
+        variables.put("starrocks_node_urls", "\"starrocks.lab:8030\"");
+        variables.put("starrocks_base_url", "jdbc:mysql://starrocks.lab:9030/");
+        variables.put("starrocks_username", "st_lab");
+        variables.put("starrocks_password", "secret");
+        variables.put("starrocks_database", "st_test");
+        variables.put("starrocks_table", "lab_sink_order");
+        variables.put("starrocks_error_table", "lab_sink_order_error");
         return variables;
     }
 }
