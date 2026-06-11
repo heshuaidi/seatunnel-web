@@ -15,8 +15,10 @@ import org.apache.seatunnel.web.api.service.model.SyncJobStatusResult;
 import org.apache.seatunnel.web.api.service.model.SyncSubmitJobResult;
 import org.apache.seatunnel.web.api.service.model.VerifyResult;
 import org.apache.seatunnel.web.api.service.model.WatermarkRange;
+import org.apache.seatunnel.web.common.constants.SyncConstants;
 import org.apache.seatunnel.web.common.enums.SyncAuditEventType;
 import org.apache.seatunnel.web.common.enums.SyncBatchStatus;
+import org.apache.seatunnel.web.common.enums.SyncIncrementalStrategy;
 import org.apache.seatunnel.web.common.enums.SyncRunMode;
 import org.apache.seatunnel.web.common.enums.SyncRunStatus;
 import org.apache.seatunnel.web.common.enums.SyncSourceType;
@@ -38,6 +40,7 @@ import org.apache.seatunnel.web.dao.repository.SyncTaskVersionDao;
 import org.apache.seatunnel.web.spi.bean.dto.BackfillTaskRequest;
 import org.apache.seatunnel.web.spi.bean.dto.PreviewHoconRequest;
 import org.apache.seatunnel.web.spi.bean.dto.RunTaskRequest;
+import org.apache.seatunnel.web.spi.bean.dto.SyncRunRerunRequest;
 import org.apache.seatunnel.web.spi.bean.vo.HoconPreviewVO;
 import org.apache.seatunnel.web.spi.bean.vo.RunDetailVO;
 import org.apache.seatunnel.web.spi.bean.vo.RunResultVO;
@@ -170,6 +173,57 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
                 waitForFinish,
                 true,
                 request.getAdvanceWatermark()
+        );
+    }
+
+    @Override
+    public RunResultVO rerun(String runId, SyncRunRerunRequest request) {
+        if (isBlank(runId)) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "runId");
+        }
+        SyncRunRerunRequest safeRequest = request == null ? new SyncRunRerunRequest() : request;
+        String mode = isBlank(safeRequest.getMode()) ? "RERUN_SAME_RANGE" : safeRequest.getMode().trim().toUpperCase();
+        if (!"RERUN_SAME_RANGE".equals(mode)) {
+            throw new ServiceException("Unsupported rerun mode: " + safeRequest.getMode());
+        }
+
+        SyncRunEntity originalRun = syncRunService.getByRunId(runId);
+        if (originalRun == null) {
+            throw new ServiceException("Sync run not found, runId=" + runId);
+        }
+        if (isBlank(originalRun.getBatchId())) {
+            throw new ServiceException("Original run has no batch range, runId=" + runId);
+        }
+        SyncBatchEntity originalBatch = syncBatchService.getByBatchId(originalRun.getBatchId());
+        if (originalBatch == null) {
+            throw new ServiceException("Original sync batch not found, batchId=" + originalRun.getBatchId());
+        }
+
+        SyncTaskEntity task = syncTaskDao.queryById(originalRun.getTaskId());
+        if (task == null) {
+            throw new ServiceException("Sync task not found, taskId=" + originalRun.getTaskId());
+        }
+        validateRunnableTask(task);
+        SyncTaskVersionEntity version = loadRunnableVersion(task);
+        SyncIncrementalConfigEntity config = loadConfigIfIncremental(task);
+        if (!isIncrementalEnabled(task) || config == null) {
+            throw new ServiceException("Only incremental JDBC/SQL tasks support RERUN_SAME_RANGE in current version");
+        }
+        if (isFileTask(task, config)) {
+            throw new ServiceException("File source rerun is not supported in this round, taskCode=" + task.getTaskCode());
+        }
+
+        WatermarkRange range = toRerunRange(config, originalBatch);
+        boolean waitForFinish = safeRequest.getWaitForFinish() == null || Boolean.TRUE.equals(safeRequest.getWaitForFinish());
+        return executePreparedIncrementalRange(
+                task,
+                version,
+                config,
+                range,
+                nullToEmpty(safeRequest.getParams()),
+                SyncTriggerType.RETRY,
+                SyncRunMode.RERUN,
+                waitForFinish
         );
     }
 
@@ -530,6 +584,163 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
         }
     }
 
+    private RunResultVO executePreparedIncrementalRange(
+            SyncTaskEntity task,
+            SyncTaskVersionEntity version,
+            SyncIncrementalConfigEntity config,
+            WatermarkRange range,
+            Map<String, Object> params,
+            SyncTriggerType triggerType,
+            SyncRunMode runMode,
+            boolean waitForFinish
+    ) {
+        SyncBatchEntity batch = null;
+        SyncRunEntity run = null;
+
+        try {
+            syncAuditService.appendInfo(null, null, task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.READ_WATERMARK, "Use prepared watermark range for rerun", range);
+
+            batch = syncBatchService.createBatchForRun(task, range, triggerType, runMode);
+            syncAuditService.appendInfo(null, batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.CREATE_BATCH, "Rerun sync batch created", batch);
+
+            updateBatchStatus(batch, SyncBatchStatus.READY, null);
+            auditStatus(null, batch, task, SyncAuditEventType.CREATE_BATCH, "Rerun sync batch is ready", SyncBatchStatus.READY);
+
+            run = createRun(task, version, batch, triggerType, params);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.CREATE_RUN, "Rerun sync run created", run);
+
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.RENDER_HOCON, "Start rendering rerun HOCON", null);
+            Map<String, Object> variables = buildVariables(task, version, run, batch, range, triggerType, runMode, config, params);
+            String generatedHocon = hoconRenderService.render(version.getHoconTemplate(), variables);
+            String hoconHash = hoconRenderService.calculateHash(generatedHocon);
+            syncRunService.updateGeneratedHocon(run.getRunId(), generatedHocon);
+            run.setGeneratedHocon(generatedHocon);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.RENDER_HOCON, "Rerun HOCON rendered", Map.of("hoconHash", hoconHash));
+
+            String jobName = buildSeatunnelJobName(task, run);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.SUBMIT_JOB, "Start submitting rerun SeaTunnel job", Map.of("jobName", jobName));
+            SyncSubmitJobResult submitResult = syncZetaClient.submitJob(task.getClientId(), jobName, generatedHocon);
+            syncRunService.updateSeatunnelJob(run.getRunId(), submitResult.getJobId(), submitResult.getJobName());
+            run.setSeatunnelJobId(submitResult.getJobId());
+            run.setSeatunnelJobName(submitResult.getJobName());
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.SUBMIT_JOB, "Rerun SeaTunnel job submitted", submitResult.getRawResponse());
+
+            updateBatchStatus(batch, SyncBatchStatus.SUBMITTED, null);
+            updateRunStatus(run, SyncRunStatus.SUBMITTED, null);
+
+            if (!waitForFinish) {
+                return toRunResult(task, version, batch, run, false);
+            }
+
+            updateBatchStatus(batch, SyncBatchStatus.RUNNING, null);
+            updateRunStatus(run, SyncRunStatus.RUNNING, null);
+
+            SyncJobStatusResult finalStatus = pollUntilFinished(task, batch, run);
+            if (!finalStatus.isSuccess()) {
+                throw new ServiceException("SeaTunnel job failed: " + finalStatus.getStatus()
+                        + (isBlank(finalStatus.getErrorMessage()) ? "" : ", " + finalStatus.getErrorMessage()));
+            }
+
+            updateBatchStatus(batch, SyncBatchStatus.VERIFYING, null);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.VERIFYING,
+                    "Rerun SeaTunnel job success, start verification",
+                    finalStatus.getRawResponse());
+            VerifyResult verifyResult = syncVerifyService.verifyRun(task, batch, run, variables);
+            syncBatchService.updateMetrics(
+                    batch.getBatchId(),
+                    verifyResult.getSourceCount(),
+                    verifyResult.getSinkCount(),
+                    verifyResult.getErrorCount()
+            );
+            syncRunService.updateMetrics(
+                    run.getRunId(),
+                    verifyResult.getSourceCount(),
+                    verifyResult.getSinkCount(),
+                    verifyResult.getErrorCount()
+            );
+            batch.setSourceCount(verifyResult.getSourceCount());
+            batch.setSinkCount(verifyResult.getSinkCount());
+            batch.setErrorCount(verifyResult.getErrorCount());
+            run.setSourceCount(verifyResult.getSourceCount());
+            run.setSinkCount(verifyResult.getSinkCount());
+            run.setErrorCount(verifyResult.getErrorCount());
+            if (!verifyResult.isPassed() || verifyResult.isHasBlockingFailure()) {
+                throw new ServiceException("Sync verification failed: " + verifyResult.getErrorMessage());
+            }
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.VERIFYING,
+                    "Rerun sync verification passed",
+                    verificationDetail(verifyResult));
+
+            boolean watermarkAdvanced = false;
+            if (range.isAdvanceWatermark()) {
+                syncWatermarkService.advanceWatermark(
+                        task.getId(),
+                        range.getWatermarkKey(),
+                        range.getEndValue(),
+                        run.getId(),
+                        batch.getBatchId()
+                );
+                watermarkAdvanced = true;
+                syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                        SyncAuditEventType.ADVANCE_WATERMARK,
+                        "Watermark advanced after successful rerun",
+                        Map.of("newValue", range.getEndValue(), "watermarkKey", range.getWatermarkKey()));
+            }
+
+            updateBatchStatus(batch, SyncBatchStatus.SUCCESS, null);
+            updateRunStatus(run, SyncRunStatus.SUCCESS, null);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.RUN_SUCCESS, "Rerun sync run success", null);
+
+            RunResultVO result = toRunResult(task, version, batch, run, watermarkAdvanced);
+            result.setRunStatus(SyncRunStatus.SUCCESS.getCode());
+            result.setBatchStatus(SyncBatchStatus.SUCCESS.getCode());
+            return result;
+        } catch (Exception e) {
+            String message = e.getMessage() == null ? e.toString() : e.getMessage();
+            log.error("Sync rerun failed, taskCode={}, batchId={}, runId={}",
+                    task.getTaskCode(),
+                    batch == null ? null : batch.getBatchId(),
+                    run == null ? null : run.getRunId(),
+                    e);
+
+            if (batch != null) {
+                updateBatchStatus(batch, SyncBatchStatus.FAILED, message);
+            }
+            if (run != null) {
+                updateRunStatus(run, SyncRunStatus.FAILED, message);
+            }
+            syncWatermarkService.rollbackOrKeepWatermarkOnFailure(
+                    task.getId(),
+                    range.getWatermarkKey(),
+                    run == null ? null : run.getId(),
+                    batch == null ? null : batch.getBatchId()
+            );
+            syncAuditService.appendError(
+                    run == null ? null : run.getRunId(),
+                    batch == null ? null : batch.getBatchId(),
+                    task.getId(),
+                    task.getTaskCode(),
+                    SyncAuditEventType.RUN_FAILED,
+                    "Rerun failed, watermark is not advanced",
+                    Map.of("errorMessage", message)
+            );
+            if (e instanceof ServiceException) {
+                throw (ServiceException) e;
+            }
+            throw new ServiceException(message, e);
+        }
+    }
+
     private RunResultVO executeFileTask(
             SyncTaskEntity task,
             SyncTaskVersionEntity version,
@@ -864,6 +1075,62 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
         }
         SyncSourceType sourceType = config.getSourceType() == null ? task.getSourceType() : config.getSourceType();
         return sourceType == SyncSourceType.LOCAL_FILE || sourceType == SyncSourceType.FTP_FILE;
+    }
+
+    private WatermarkRange toRerunRange(SyncIncrementalConfigEntity config, SyncBatchEntity originalBatch) {
+        WatermarkRange range = new WatermarkRange();
+        range.setWatermarkKey(defaultWatermarkKey(config.getWatermarkKey()));
+        range.setValueType(valueType(config));
+        range.setBackfill(false);
+        range.setAdvanceWatermark(true);
+        range.setLookbackApplied(false);
+        range.setMaxBatchSecondsApplied(false);
+        range.setWarnings(Collections.emptyList());
+
+        switch (config.getStrategy()) {
+            case UPDATE_TIME_RANGE:
+                if (originalBatch.getBatchStartTime() == null || originalBatch.getBatchEndTime() == null) {
+                    throw new ServiceException("Original batch has no time range, batchId=" + originalBatch.getBatchId());
+                }
+                LocalDateTime startTime = toLocalDateTime(originalBatch.getBatchStartTime());
+                LocalDateTime endTime = toLocalDateTime(originalBatch.getBatchEndTime());
+                range.setStartTime(startTime);
+                range.setEndTime(endTime);
+                range.setStartValue(isBlank(originalBatch.getBatchStartValue())
+                        ? DATE_TIME_FORMATTER.format(startTime)
+                        : originalBatch.getBatchStartValue());
+                range.setEndValue(isBlank(originalBatch.getBatchEndValue())
+                        ? DATE_TIME_FORMATTER.format(endTime)
+                        : originalBatch.getBatchEndValue());
+                range.setCurrentWatermark(range.getStartValue());
+                return range;
+            case ID_RANGE:
+                if (isBlank(originalBatch.getBatchStartValue()) || isBlank(originalBatch.getBatchEndValue())) {
+                    throw new ServiceException("Original batch has no id range, batchId=" + originalBatch.getBatchId());
+                }
+                range.setStartValue(originalBatch.getBatchStartValue());
+                range.setEndValue(originalBatch.getBatchEndValue());
+                range.setCurrentWatermark(originalBatch.getBatchStartValue());
+                return range;
+            default:
+                throw unsupportedStrategy(config.getStrategy());
+        }
+    }
+
+    private LocalDateTime toLocalDateTime(Date value) {
+        return LocalDateTime.ofInstant(value.toInstant(), ZoneId.systemDefault());
+    }
+
+    private String defaultWatermarkKey(String watermarkKey) {
+        return isBlank(watermarkKey) ? SyncConstants.DEFAULT_WATERMARK_KEY : watermarkKey;
+    }
+
+    private String valueType(SyncIncrementalConfigEntity config) {
+        return config.getWatermarkFieldType() == null ? null : config.getWatermarkFieldType().getCode();
+    }
+
+    private ServiceException unsupportedStrategy(SyncIncrementalStrategy strategy) {
+        return new ServiceException("Unsupported incremental strategy: " + strategy);
     }
 
     private int resolveMaxFiles(SyncIncrementalConfigEntity config, Map<String, Object> params) {

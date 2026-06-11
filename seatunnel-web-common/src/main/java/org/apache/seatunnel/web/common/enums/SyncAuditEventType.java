@@ -20,6 +20,7 @@ public enum SyncAuditEventType {
     POLL_STATUS("POLL_STATUS", "轮询状态"),
     VERIFYING("VERIFYING", "运行校验"),
     ADVANCE_WATERMARK("ADVANCE_WATERMARK", "推进 watermark"),
+    MANUAL_UPDATE_WATERMARK("MANUAL_UPDATE_WATERMARK", "手动修正 watermark"),
     RUN_SUCCESS("RUN_SUCCESS", "运行成功"),
     RUN_FAILED("RUN_FAILED", "运行失败");
 

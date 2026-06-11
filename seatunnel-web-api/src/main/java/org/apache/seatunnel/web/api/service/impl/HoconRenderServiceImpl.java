@@ -15,9 +15,13 @@ import java.security.MessageDigest;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -104,6 +108,33 @@ public class HoconRenderServiceImpl implements HoconRenderService {
         } catch (Exception e) {
             throw new ServiceException("Calculate HOCON hash failed: " + e.getMessage(), e);
         }
+    }
+
+    @Override
+    public Set<String> extractVariables(String template) {
+        if (template == null) {
+            return Set.of();
+        }
+
+        Set<String> variables = new LinkedHashSet<>();
+        Matcher matcher = VARIABLE_PATTERN.matcher(template);
+        while (matcher.find()) {
+            variables.add(matcher.group(1));
+        }
+        return variables;
+    }
+
+    @Override
+    public List<String> findMissingVariables(String template, Map<String, Object> variables) {
+        Set<String> usedVariables = extractVariables(template);
+        Map<String, Object> safeVariables = variables == null ? Map.of() : variables;
+        List<String> missingVariables = new ArrayList<>();
+        for (String variable : usedVariables) {
+            if (!safeVariables.containsKey(variable) || safeVariables.get(variable) == null) {
+                missingVariables.add(variable);
+            }
+        }
+        return missingVariables;
     }
 
     private SyncTaskVersionEntity loadTaskVersion(SyncTaskEntity task) {

@@ -6,6 +6,7 @@ import org.apache.seatunnel.web.api.service.SyncCheckResultService;
 import org.apache.seatunnel.web.api.service.SyncFileDiscoveryService;
 import org.apache.seatunnel.web.api.service.SyncRunCoordinatorService;
 import org.apache.seatunnel.web.api.service.SyncTaskService;
+import org.apache.seatunnel.web.api.service.SyncTaskDiagnosticService;
 import org.apache.seatunnel.web.common.enums.SyncCheckDatasourceType;
 import org.apache.seatunnel.web.common.enums.SyncCheckExpectedOperator;
 import org.apache.seatunnel.web.common.enums.SyncCheckType;
@@ -21,15 +22,29 @@ import org.apache.seatunnel.web.spi.bean.dto.DiscoverFilesRequest;
 import org.apache.seatunnel.web.spi.bean.dto.PreviewHoconRequest;
 import org.apache.seatunnel.web.spi.bean.dto.RunTaskRequest;
 import org.apache.seatunnel.web.spi.bean.dto.SyncCheckConfigRequest;
+import org.apache.seatunnel.web.spi.bean.dto.SyncCheckDiagnoseRequest;
+import org.apache.seatunnel.web.spi.bean.dto.SyncHoconDiagnoseRequest;
+import org.apache.seatunnel.web.spi.bean.dto.SyncRangePreviewRequest;
+import org.apache.seatunnel.web.spi.bean.dto.SyncRunRerunRequest;
+import org.apache.seatunnel.web.spi.bean.dto.SyncTaskDiagnoseRequest;
+import org.apache.seatunnel.web.spi.bean.dto.SyncWatermarkUpdateRequest;
+import org.apache.seatunnel.web.spi.bean.entity.PaginationResult;
 import org.apache.seatunnel.web.spi.bean.entity.Result;
 import org.apache.seatunnel.web.spi.bean.vo.HoconPreviewVO;
 import org.apache.seatunnel.web.spi.bean.vo.RunDetailVO;
 import org.apache.seatunnel.web.spi.bean.vo.RunResultVO;
+import org.apache.seatunnel.web.spi.bean.vo.SyncAuditItemVO;
+import org.apache.seatunnel.web.spi.bean.vo.SyncBatchListItemVO;
+import org.apache.seatunnel.web.spi.bean.vo.SyncCheckDiagnosticVO;
 import org.apache.seatunnel.web.spi.bean.vo.SyncCheckConfigVO;
 import org.apache.seatunnel.web.spi.bean.vo.SyncCheckResultVO;
 import org.apache.seatunnel.web.spi.bean.vo.SyncFileDiscoveryResultVO;
 import org.apache.seatunnel.web.spi.bean.vo.SyncFileItemVO;
 import org.apache.seatunnel.web.spi.bean.vo.SyncFileRetryResultVO;
+import org.apache.seatunnel.web.spi.bean.vo.SyncHoconDiagnosticVO;
+import org.apache.seatunnel.web.spi.bean.vo.SyncRangePreviewVO;
+import org.apache.seatunnel.web.spi.bean.vo.SyncRunListItemVO;
+import org.apache.seatunnel.web.spi.bean.vo.SyncTaskDiagnosticVO;
 import org.apache.seatunnel.web.spi.bean.vo.WatermarkVO;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -70,6 +85,41 @@ public class SyncRunController {
     @Resource
     private SyncFileDiscoveryService syncFileDiscoveryService;
 
+    @Resource
+    private SyncTaskDiagnosticService syncTaskDiagnosticService;
+
+    @PostMapping("/tasks/{taskCode}/diagnose")
+    public Result<SyncTaskDiagnosticVO> diagnoseTask(
+            @PathVariable("taskCode") String taskCode,
+            @RequestBody(required = false) SyncTaskDiagnoseRequest request
+    ) {
+        return Result.buildSuc(syncTaskDiagnosticService.diagnoseTask(taskCode, request));
+    }
+
+    @PostMapping("/tasks/{taskCode}/preview-range")
+    public Result<SyncRangePreviewVO> previewRange(
+            @PathVariable("taskCode") String taskCode,
+            @RequestBody(required = false) SyncRangePreviewRequest request
+    ) {
+        return Result.buildSuc(syncTaskDiagnosticService.previewRange(taskCode, request));
+    }
+
+    @PostMapping("/tasks/{taskCode}/diagnose-hocon")
+    public Result<SyncHoconDiagnosticVO> diagnoseHocon(
+            @PathVariable("taskCode") String taskCode,
+            @RequestBody(required = false) SyncHoconDiagnoseRequest request
+    ) {
+        return Result.buildSuc(syncTaskDiagnosticService.diagnoseHocon(taskCode, request));
+    }
+
+    @PostMapping("/tasks/{taskCode}/diagnose-checks")
+    public Result<SyncCheckDiagnosticVO> diagnoseChecks(
+            @PathVariable("taskCode") String taskCode,
+            @RequestBody(required = false) SyncCheckDiagnoseRequest request
+    ) {
+        return Result.buildSuc(syncTaskDiagnosticService.diagnoseChecks(taskCode, request));
+    }
+
     @PostMapping("/tasks/{taskCode}/preview-hocon")
     public Result<HoconPreviewVO> previewHocon(
             @PathVariable("taskCode") String taskCode,
@@ -99,9 +149,76 @@ public class SyncRunController {
         return Result.buildSuc(syncRunCoordinatorService.getRun(runId));
     }
 
+    @PostMapping("/runs/{runId}/rerun")
+    public Result<RunResultVO> rerun(
+            @PathVariable("runId") String runId,
+            @RequestBody(required = false) SyncRunRerunRequest request
+    ) {
+        return Result.buildSuc(syncRunCoordinatorService.rerun(runId, request));
+    }
+
     @GetMapping("/tasks/{taskCode}/watermark")
     public Result<List<WatermarkVO>> getWatermark(@PathVariable("taskCode") String taskCode) {
         return Result.buildSuc(syncRunCoordinatorService.getWatermark(taskCode));
+    }
+
+    @PutMapping("/tasks/{taskCode}/watermark")
+    public Result<WatermarkVO> updateWatermark(
+            @PathVariable("taskCode") String taskCode,
+            @RequestBody SyncWatermarkUpdateRequest request
+    ) {
+        return Result.buildSuc(syncTaskDiagnosticService.updateWatermark(taskCode, request));
+    }
+
+    @GetMapping("/tasks/{taskCode}/runs")
+    public PaginationResult<SyncRunListItemVO> listRuns(
+            @PathVariable("taskCode") String taskCode,
+            @RequestParam(value = "pageNo", required = false) Integer pageNo,
+            @RequestParam(value = "pageSize", required = false) Integer pageSize,
+            @RequestParam(value = "status", required = false) String status,
+            @RequestParam(value = "startTime", required = false) String startTime,
+            @RequestParam(value = "endTime", required = false) String endTime
+    ) {
+        return syncTaskDiagnosticService.listRuns(taskCode, pageNo, pageSize, status, startTime, endTime);
+    }
+
+    @GetMapping("/tasks/{taskCode}/batches")
+    public PaginationResult<SyncBatchListItemVO> listBatches(
+            @PathVariable("taskCode") String taskCode,
+            @RequestParam(value = "pageNo", required = false) Integer pageNo,
+            @RequestParam(value = "pageSize", required = false) Integer pageSize,
+            @RequestParam(value = "status", required = false) String status,
+            @RequestParam(value = "startTime", required = false) String startTime,
+            @RequestParam(value = "endTime", required = false) String endTime
+    ) {
+        return syncTaskDiagnosticService.listBatches(taskCode, pageNo, pageSize, status, startTime, endTime);
+    }
+
+    @GetMapping("/batches/{batchId}")
+    public Result<SyncBatchListItemVO> getBatch(@PathVariable("batchId") String batchId) {
+        return Result.buildSuc(syncTaskDiagnosticService.getBatch(batchId));
+    }
+
+    @GetMapping("/runs/{runId}/audits")
+    public PaginationResult<SyncAuditItemVO> listRunAudits(
+            @PathVariable("runId") String runId,
+            @RequestParam(value = "pageNo", required = false) Integer pageNo,
+            @RequestParam(value = "pageSize", required = false) Integer pageSize,
+            @RequestParam(value = "startTime", required = false) String startTime,
+            @RequestParam(value = "endTime", required = false) String endTime
+    ) {
+        return syncTaskDiagnosticService.listRunAudits(runId, pageNo, pageSize, startTime, endTime);
+    }
+
+    @GetMapping("/batches/{batchId}/audits")
+    public PaginationResult<SyncAuditItemVO> listBatchAudits(
+            @PathVariable("batchId") String batchId,
+            @RequestParam(value = "pageNo", required = false) Integer pageNo,
+            @RequestParam(value = "pageSize", required = false) Integer pageSize,
+            @RequestParam(value = "startTime", required = false) String startTime,
+            @RequestParam(value = "endTime", required = false) String endTime
+    ) {
+        return syncTaskDiagnosticService.listBatchAudits(batchId, pageNo, pageSize, startTime, endTime);
     }
 
     @PostMapping("/tasks/{taskCode}/discover-files")

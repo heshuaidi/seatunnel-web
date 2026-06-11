@@ -583,6 +583,17 @@ GET  /api/v1/sync/tasks/{taskCode}/checks
 POST /api/v1/sync/tasks/{taskCode}/checks
 PUT  /api/v1/sync/tasks/{taskCode}/checks/{checkCode}
 GET  /api/v1/sync/runs/{runId}/checks
+POST /api/v1/sync/tasks/{taskCode}/diagnose
+POST /api/v1/sync/tasks/{taskCode}/preview-range
+POST /api/v1/sync/tasks/{taskCode}/diagnose-hocon
+POST /api/v1/sync/tasks/{taskCode}/diagnose-checks
+GET  /api/v1/sync/tasks/{taskCode}/runs
+GET  /api/v1/sync/tasks/{taskCode}/batches
+GET  /api/v1/sync/runs/{runId}/audits
+GET  /api/v1/sync/batches/{batchId}
+GET  /api/v1/sync/batches/{batchId}/audits
+PUT  /api/v1/sync/tasks/{taskCode}/watermark
+POST /api/v1/sync/runs/{runId}/rerun
 ```
 
 运行请求示例：
@@ -766,6 +777,353 @@ error_count 配置示例：
   "sortOrder": 30
 }
 ```
+
+## 第八阶段：增量 Batch 诊断与观测
+
+第八阶段继续暂停 FtpFile、LocalFile、WAT/CP 文件 translator、文件 manifest 增强、前端、XXL-JOB 和 DAG。本阶段只增强 JDBC / SQL / Oracle / StarRocks 增量 Batch source 管理功能在真实环境测试时的诊断、排错和只读查询能力。
+
+本阶段不新增表，复用以下已有表：
+
+- `t_seatunnel_web_sync_task`
+- `t_seatunnel_web_sync_task_version`
+- `t_seatunnel_web_sync_incremental_config`
+- `t_seatunnel_web_sync_watermark`
+- `t_seatunnel_web_sync_batch`
+- `t_seatunnel_web_sync_run`
+- `t_seatunnel_web_sync_audit`
+- `t_seatunnel_web_sync_check_config`
+- `t_seatunnel_web_sync_check_result`
+
+### 诊断 API
+
+`diagnose` 汇总检查 task、version、incremental_config、watermark、range preview、HOCON、check SQL 和 Zeta client 可见性。
+
+```http
+POST /api/v1/sync/tasks/{taskCode}/diagnose
+```
+
+```json
+{
+  "params": {
+    "batchEndValue": "100",
+    "source_username": "st_lab",
+    "source_password": "st_lab_pass",
+    "starrocks_username": "st_lab",
+    "starrocks_password": "st_lab_pass"
+  },
+  "includeHoconPreview": true,
+  "includeCheckPreview": true,
+  "includeDatasourceCheck": false
+}
+```
+
+返回内容包括：
+
+- `task`：任务 ID、code、name、状态、类型、source/sink/engine、clientId、增量开关和策略。
+- `version`：versionId、versionNo、发布状态、hoconHash、是否存在。
+- `incrementalConfig`：策略、watermark 字段、起点、lookback、maxBatchSeconds。
+- `watermark`：当前值、前值、valueType、最近成功 run/batch。
+- `rangePreview`：下一批 start/end value/time、lookback/maxBatchSeconds 应用情况和 warnings。
+- `hocon`：是否可渲染、缺失变量、渲染 hash、脱敏预览。
+- `checks`：check 数量、启用数量、缺 datasourceId、是否可渲染、SQL 预览。
+- `client`：clientId、是否可见、warning。
+- `diagnostics`：`OK / WARN / ERROR` 和消息列表。
+
+`diagnose` 是只读诊断：
+
+- 不创建 batch。
+- 不创建 run。
+- 不提交 SeaTunnel。
+- 不推进 watermark。
+- 默认不执行 check SQL。
+- 所有返回中的 password、token、secret 等敏感信息会脱敏。
+
+如果任务不存在，返回明确错误。任务状态不是 `PUBLISHED` 时返回 WARN 或 ERROR。`ID_RANGE` 缺少 `batchEndValue` 时返回：
+
+```text
+ID_RANGE requires batchEndValue in run params
+```
+
+### Range Preview API
+
+只预览下一次 batch range，不落库、不推进 watermark。
+
+```http
+POST /api/v1/sync/tasks/{taskCode}/preview-range
+```
+
+UPDATE_TIME_RANGE 示例：
+
+```json
+{
+  "runMode": "NORMAL",
+  "params": {}
+}
+```
+
+ID_RANGE 示例：
+
+```json
+{
+  "runMode": "NORMAL",
+  "params": {
+    "batchEndValue": "100"
+  }
+}
+```
+
+BACKFILL 示例：
+
+```json
+{
+  "runMode": "BACKFILL",
+  "params": {
+    "startTime": "2026-06-01 00:00:00",
+    "endTime": "2026-06-01 01:00:00",
+    "advanceWatermark": false
+  }
+}
+```
+
+返回字段：
+
+- `taskCode`
+- `strategy`
+- `watermarkKey`
+- `currentWatermark`
+- `startValue`
+- `endValue`
+- `startTime`
+- `endTime`
+- `lookbackApplied`
+- `maxBatchSecondsApplied`
+- `willAdvanceWatermark`
+- `warnings`
+
+该接口复用 `SyncWatermarkService.previewRange`，与正式 run 使用同一套 range 计算逻辑。
+
+### HOCON 诊断 API
+
+只检查当前 task version 的 HOCON 模板是否能渲染。
+
+```http
+POST /api/v1/sync/tasks/{taskCode}/diagnose-hocon
+```
+
+```json
+{
+  "params": {
+    "batchEndValue": "100",
+    "source_username": "st_lab",
+    "source_password": "st_lab_pass",
+    "starrocks_username": "st_lab",
+    "starrocks_password": "st_lab_pass"
+  },
+  "includeRenderedHocon": false
+}
+```
+
+返回字段：
+
+- `renderable`
+- `missingVariables`
+- `renderedHash`
+- `renderedHocon`
+- `renderedHoconPreview`
+- `variablesUsed`
+- `maskedParams`
+- `errorMessage`
+
+`HoconRenderService` 提供：
+
+```java
+Set<String> extractVariables(String template);
+
+List<String> findMissingVariables(String template, Map<String, Object> variables);
+```
+
+缺变量时一次性返回所有缺失变量，不只返回第一个。`includeRenderedHocon=false` 时不返回完整 HOCON，只返回 hash 和预览。
+
+### Check SQL 诊断 API
+
+检查 `t_seatunnel_web_sync_check_config` 中的 SQL 是否能渲染，必要时执行。
+
+```http
+POST /api/v1/sync/tasks/{taskCode}/diagnose-checks
+```
+
+```json
+{
+  "params": {
+    "batch_id": "test_batch_001",
+    "batchEndValue": "100",
+    "source_username": "st_lab",
+    "source_password": "st_lab_pass",
+    "starrocks_username": "st_lab",
+    "starrocks_password": "st_lab_pass"
+  },
+  "executeSql": false
+}
+```
+
+每个 check 返回：
+
+- `checkCode`
+- `checkName`
+- `checkType`
+- `datasourceId`
+- `enabled`
+- `renderable`
+- `missingVariables`
+- `renderedSqlPreview`
+- `executeSql`
+- `executed`
+- `actualValue`
+- `passed`
+- `errorMessage`
+
+`executeSql=false` 时只渲染不执行。`executeSql=true` 时复用 `SyncCheckSqlExecutor` 执行只读 SQL。单个 check 的 SQL 执行异常不会影响其他 check 的诊断。
+
+### 只读查询 API
+
+为真实测试补齐运行、批次和 audit 查询能力。
+
+```http
+GET /api/v1/sync/tasks/{taskCode}/runs
+GET /api/v1/sync/tasks/{taskCode}/batches
+GET /api/v1/sync/runs/{runId}/audits
+GET /api/v1/sync/batches/{batchId}
+GET /api/v1/sync/batches/{batchId}/audits
+```
+
+最小分页参数：
+
+- `pageNo`
+- `pageSize`
+- `status`
+- `startTime`
+- `endTime`
+
+run 列表返回：
+
+- `runId`
+- `batchId`
+- `taskCode`
+- `status`
+- `seatunnelJobId`
+- `submitTime`
+- `startTime`
+- `endTime`
+- `sourceCount`
+- `sinkCount`
+- `errorCount`
+- `errorMessage`
+
+batch 列表和详情返回：
+
+- `batchId`
+- `taskCode`
+- `status`
+- `batchStartValue`
+- `batchEndValue`
+- `batchStartTime`
+- `batchEndTime`
+- `sourceCount`
+- `sinkCount`
+- `errorCount`
+- `errorMessage`
+- `createTime`
+- `updateTime`
+
+audit 返回：
+
+- `eventType`
+- `eventLevel`
+- `eventMessage`
+- `detailJson`
+- `createTime`
+
+`detailJson` 返回前会脱敏，避免历史 audit 中已有敏感信息直接暴露。
+
+### 手动 Watermark 修正 API
+
+测试阶段可手动修正 watermark。
+
+```http
+PUT /api/v1/sync/tasks/{taskCode}/watermark
+```
+
+```json
+{
+  "watermarkKey": "default",
+  "currentValue": "2026-06-01 00:00:00",
+  "reason": "reset for lab test"
+}
+```
+
+行为：
+
+- 更新 `t_seatunnel_web_sync_watermark.current_value`。
+- 更新前的 `current_value` 写入 `previous_value`。
+- `reason` 不允许为空。
+- 写 audit：
+  - `event_type = MANUAL_UPDATE_WATERMARK`
+  - `event_level = WARN`
+  - `detail_json` 包含 `oldValue`、`newValue`、`reason`
+- 如果 watermark 不存在，但 task 和 incremental_config 存在，则允许创建默认 watermark。
+- 如果 task 不存在，直接报错。
+
+### Rerun API 第一版
+
+第一版只支持 JDBC / SQL 增量任务的同范围重跑。
+
+```http
+POST /api/v1/sync/runs/{runId}/rerun
+```
+
+```json
+{
+  "mode": "RERUN_SAME_RANGE",
+  "waitForFinish": true,
+  "params": {
+    "source_username": "st_lab",
+    "source_password": "st_lab_pass",
+    "starrocks_username": "st_lab",
+    "starrocks_password": "st_lab_pass"
+  }
+}
+```
+
+规则：
+
+1. 找到原 run 和原 batch。
+2. 使用原 batch 的 `batch_start_value`、`batch_end_value`、`batch_start_time`、`batch_end_time`。
+3. 新建一个新的系统 batch 和新的 run，避免覆盖原失败状态。
+4. 不重新计算 watermark range。
+5. 新 run 成功且 verification passed 后，watermark 推进到原 range end。
+6. 新 run 失败或 verification failed 时，不推进 watermark。
+7. 原 run 没有 range 信息时返回不支持。
+8. 文件类任务本阶段不支持 rerun。
+
+### 真实测试排错 SOP
+
+完整 SOP 见：
+
+```text
+docs/generic-jdbc-starrocks-incremental-test.md
+```
+
+常见定位路径：
+
+| 问题 | 首选接口 | 关注字段 |
+| --- | --- | --- |
+| HOCON 缺变量 | `POST /diagnose-hocon` | `missingVariables` |
+| `batchEndValue` 缺失 | `POST /preview-range` | `ID_RANGE requires batchEndValue in run params` |
+| check SQL 渲染失败 | `POST /diagnose-checks` | `missingVariables`、`renderedSqlPreview` |
+| check SQL 执行失败 | `POST /diagnose-checks` 且 `executeSql=true` | `errorMessage`、`datasourceId` |
+| Zeta 提交失败 | `GET /runs/{runId}/audits` | `SUBMIT_JOB` audit |
+| SeaTunnel job failed | `GET /tasks/{taskCode}/runs` | `seatunnelJobId`、`errorMessage` |
+| watermark 没推进 | watermark + run/batch/audit 查询 | run/batch status、`ADVANCE_WATERMARK` audit |
 
 ## 后续阶段建议
 

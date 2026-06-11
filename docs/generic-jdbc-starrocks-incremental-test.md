@@ -283,3 +283,351 @@ The current watermark must remain unchanged because watermark advancement happen
 - Missing HOCON variables fail fast during preview/run. Pass credential placeholders through run params or save real lab credentials in the created task template.
 - `ID_RANGE` requires `batchEndValue`; otherwise range calculation fails before job submission.
 - `starrocksNodeUrls` must render as a HOCON array value, for example `"\"starrocks.lab:8030\""`.
+
+## Real Test Troubleshooting SOP
+
+This SOP is for JDBC / SQL / Oracle / StarRocks incremental batch source testing. It intentionally does not cover FtpFile, LocalFile, WAT, or CP file translator flows.
+
+### 1. Create Lab Tables
+
+Run:
+
+```text
+docs/sql/generic_jdbc_sql_incremental_starrocks_lab.sql
+```
+
+Confirm the source and sink tables exist:
+
+- `lab_src_order`
+- `lab_sink_order`
+- `lab_sink_order_error`
+
+### 2. Create UPDATE_TIME_RANGE Task
+
+Use the `Create UPDATE_TIME_RANGE Task` request above. Keep credentials as variables in the task template:
+
+```text
+${source_username}
+${source_password}
+${starrocks_username}
+${starrocks_password}
+```
+
+### 3. Diagnose Task
+
+```http
+POST /api/v1/sync/tasks/lab_order_update_time_sync/diagnose
+```
+
+```json
+{
+  "params": {
+    "source_username": "st_lab",
+    "source_password": "st_lab_pass",
+    "starrocks_username": "st_lab",
+    "starrocks_password": "st_lab_pass"
+  },
+  "includeHoconPreview": true,
+  "includeCheckPreview": true,
+  "includeDatasourceCheck": false
+}
+```
+
+Use this first when a task cannot run. It verifies task metadata, current version, incremental config, watermark, range preview, HOCON rendering, check SQL rendering, and client visibility without creating a batch/run or submitting SeaTunnel.
+
+### 4. Preview Range
+
+```http
+POST /api/v1/sync/tasks/lab_order_update_time_sync/preview-range
+```
+
+```json
+{
+  "runMode": "NORMAL",
+  "params": {}
+}
+```
+
+Confirm:
+
+- `startTime` equals the current watermark minus `lookbackSeconds`.
+- `endTime` respects `maxBatchSeconds`.
+- `willAdvanceWatermark = true` for normal incremental runs.
+
+### 5. Diagnose HOCON
+
+```http
+POST /api/v1/sync/tasks/lab_order_update_time_sync/diagnose-hocon
+```
+
+```json
+{
+  "params": {
+    "source_username": "st_lab",
+    "source_password": "st_lab_pass",
+    "starrocks_username": "st_lab",
+    "starrocks_password": "st_lab_pass"
+  },
+  "includeRenderedHocon": false
+}
+```
+
+Check:
+
+- `renderable`
+- `missingVariables`
+- `variablesUsed`
+- `renderedHash`
+- `renderedHoconPreview`
+
+Passwords, tokens, and secrets are masked in the returned params and HOCON preview.
+
+### 6. Preview HOCON
+
+The older preview endpoint is still useful for checking the final rendered HOCON shape:
+
+```http
+POST /api/v1/sync/tasks/lab_order_update_time_sync/preview-hocon
+```
+
+```json
+{
+  "params": {
+    "source_username": "st_lab",
+    "source_password": "st_lab_pass",
+    "starrocks_username": "st_lab",
+    "starrocks_password": "st_lab_pass"
+  }
+}
+```
+
+Prefer `diagnose-hocon` when you need all missing variables returned at once.
+
+### 7. Run
+
+```http
+POST /api/v1/sync/tasks/lab_order_update_time_sync/run
+```
+
+```json
+{
+  "triggerType": "MANUAL",
+  "runMode": "NORMAL",
+  "waitForFinish": true,
+  "params": {
+    "source_username": "st_lab",
+    "source_password": "st_lab_pass",
+    "starrocks_username": "st_lab",
+    "starrocks_password": "st_lab_pass"
+  }
+}
+```
+
+### 8. Query Runs
+
+```http
+GET /api/v1/sync/tasks/lab_order_update_time_sync/runs?pageNo=1&pageSize=20
+```
+
+Optional filters:
+
+- `status`
+- `startTime`
+- `endTime`
+
+Use this to find `runId`, `batchId`, SeaTunnel job id, counts, and the final error message.
+
+### 9. Query Batches
+
+```http
+GET /api/v1/sync/tasks/lab_order_update_time_sync/batches?pageNo=1&pageSize=20
+```
+
+```http
+GET /api/v1/sync/batches/{batchId}
+```
+
+Use this to confirm the calculated batch range, status, metrics, and failure reason.
+
+### 10. Query Audits
+
+```http
+GET /api/v1/sync/runs/{runId}/audits
+```
+
+```http
+GET /api/v1/sync/batches/{batchId}/audits
+```
+
+Audit detail JSON is masked before return. Use audits to locate failures around range calculation, HOCON render, SeaTunnel submit, polling, verification, or watermark advancement.
+
+### 11. Query Checks
+
+```http
+GET /api/v1/sync/runs/{runId}/checks
+```
+
+For pre-run check SQL diagnostics:
+
+```http
+POST /api/v1/sync/tasks/lab_order_update_time_sync/diagnose-checks
+```
+
+```json
+{
+  "params": {
+    "batch_id": "test_batch_001",
+    "source_username": "st_lab",
+    "source_password": "st_lab_pass",
+    "starrocks_username": "st_lab",
+    "starrocks_password": "st_lab_pass"
+  },
+  "executeSql": false
+}
+```
+
+Set `executeSql = true` only when you want to validate datasource connectivity and SQL execution.
+
+### 12. Query Watermark
+
+```http
+GET /api/v1/sync/tasks/lab_order_update_time_sync/watermark
+```
+
+Watermark advances only after SeaTunnel success and verification passed.
+
+### 13. Insert Second Batch And Run Again
+
+Insert the second lab data block or use the data already inserted by the lab SQL. Run the same task again and verify:
+
+- new run uses the previous `currentValue` as range start.
+- `maxBatchSeconds` caps the next end time.
+- watermark advances only after the second run succeeds.
+
+### 14. Manually Reset Watermark
+
+```http
+PUT /api/v1/sync/tasks/lab_order_update_time_sync/watermark
+```
+
+```json
+{
+  "watermarkKey": "default",
+  "currentValue": "2026-06-01 00:00:00",
+  "reason": "reset for lab test"
+}
+```
+
+Behavior:
+
+- old `current_value` is moved to `previous_value`.
+- new `current_value` is saved.
+- audit event `MANUAL_UPDATE_WATERMARK` is written with WARN level.
+- `reason` is required.
+
+### 15. Create ID_RANGE Task
+
+Use the `Create ID_RANGE Task` request above.
+
+### 16. Run ID_RANGE With batchEndValue
+
+Always pass `batchEndValue` for normal ID range runs:
+
+```http
+POST /api/v1/sync/tasks/lab_order_id_range_sync/preview-range
+```
+
+```json
+{
+  "runMode": "NORMAL",
+  "params": {
+    "batchEndValue": "100"
+  }
+}
+```
+
+Then run:
+
+```http
+POST /api/v1/sync/tasks/lab_order_id_range_sync/run
+```
+
+```json
+{
+  "triggerType": "MANUAL",
+  "runMode": "NORMAL",
+  "waitForFinish": true,
+  "params": {
+    "batchEndValue": "100",
+    "source_username": "st_lab",
+    "source_password": "st_lab_pass",
+    "starrocks_username": "st_lab",
+    "starrocks_password": "st_lab_pass"
+  }
+}
+```
+
+If `batchEndValue` is missing, `preview-range` and `diagnose` return:
+
+```text
+ID_RANGE requires batchEndValue in run params
+```
+
+### 17. Intentionally Create A Failure
+
+Use one failure at a time:
+
+- Change `starrocks_table` or `starrocksTable` to a non-existing table.
+- Omit `starrocks_password` from run params.
+- Configure a check SQL that points at a wrong table.
+
+### 18. Verify Watermark Did Not Advance
+
+After the failed run:
+
+```http
+GET /api/v1/sync/tasks/{taskCode}/watermark
+GET /api/v1/sync/tasks/{taskCode}/runs?pageNo=1&pageSize=5
+GET /api/v1/sync/runs/{runId}/audits
+```
+
+Confirm:
+
+- run or batch status is `FAILED`.
+- `currentValue` is unchanged.
+- there is no successful `ADVANCE_WATERMARK` audit for the failed run.
+
+### 19. Fix And Rerun Same Range
+
+Fix the task version, credentials, or check SQL. Then rerun the failed range:
+
+```http
+POST /api/v1/sync/runs/{runId}/rerun
+```
+
+```json
+{
+  "mode": "RERUN_SAME_RANGE",
+  "waitForFinish": true,
+  "params": {
+    "source_username": "st_lab",
+    "source_password": "st_lab_pass",
+    "starrocks_username": "st_lab",
+    "starrocks_password": "st_lab_pass"
+  }
+}
+```
+
+The first rerun version supports JDBC / SQL incremental tasks and reuses the original range by creating a new system batch/run. Watermark advances only after the rerun succeeds and verification passes.
+
+### 20. Common Error Location Table
+
+| Symptom | Use | What To Check |
+| --- | --- | --- |
+| HOCON missing variables | `POST /diagnose-hocon` | `missingVariables`, `variablesUsed`, masked params |
+| Missing `batchEndValue` | `POST /preview-range` | ID_RANGE requires `batchEndValue` in run params |
+| Check SQL render failed | `POST /diagnose-checks` | per-check `missingVariables` and `renderedSqlPreview` |
+| Check SQL execution failed | `POST /diagnose-checks` with `executeSql=true` | per-check `errorMessage`, datasource id, SQL permissions |
+| Zeta submit failed | `GET /sync/runs/{runId}/audits` | `SUBMIT_JOB` audit detail |
+| SeaTunnel job failed | `GET /sync/tasks/{taskCode}/runs` | run `errorMessage` and `seatunnelJobId` |
+| Watermark did not advance | watermark + run/batch/audit queries | run/batch status and `ADVANCE_WATERMARK` audit |

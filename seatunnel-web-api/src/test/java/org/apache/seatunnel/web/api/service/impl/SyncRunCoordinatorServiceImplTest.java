@@ -30,6 +30,7 @@ import org.apache.seatunnel.web.dao.repository.SyncIncrementalConfigDao;
 import org.apache.seatunnel.web.dao.repository.SyncTaskDao;
 import org.apache.seatunnel.web.dao.repository.SyncTaskVersionDao;
 import org.apache.seatunnel.web.spi.bean.dto.RunTaskRequest;
+import org.apache.seatunnel.web.spi.bean.dto.SyncRunRerunRequest;
 import org.apache.seatunnel.web.spi.bean.vo.RunResultVO;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -38,6 +39,8 @@ import org.mockito.Mockito;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.Date;
 import java.util.Map;
 
 class SyncRunCoordinatorServiceImplTest {
@@ -48,6 +51,7 @@ class SyncRunCoordinatorServiceImplTest {
     private SyncIncrementalConfigDao configDao;
     private SyncBatchService batchService;
     private SyncZetaClient zetaClient;
+    private SyncRunService runService;
 
     @BeforeEach
     void setUp() {
@@ -59,13 +63,14 @@ class SyncRunCoordinatorServiceImplTest {
         SyncTaskVersionDao versionDao = Mockito.mock(SyncTaskVersionDao.class);
         configDao = Mockito.mock(SyncIncrementalConfigDao.class);
         batchService = Mockito.mock(SyncBatchService.class);
-        SyncRunService runService = Mockito.mock(SyncRunService.class);
+        runService = Mockito.mock(SyncRunService.class);
         SyncAuditService auditService = Mockito.mock(SyncAuditService.class);
         zetaClient = Mockito.mock(SyncZetaClient.class);
         HoconRenderService hoconRenderService = new HoconRenderServiceImpl();
 
         Mockito.when(taskDao.queryByTaskCode("task_1")).thenReturn(task());
         Mockito.when(taskDao.queryByTaskCode("loader_task")).thenReturn(nonIncrementalTask());
+        Mockito.when(taskDao.queryById(1L)).thenReturn(task());
         Mockito.when(versionDao.queryById(2L)).thenReturn(version());
         Mockito.when(versionDao.queryById(3L)).thenReturn(nonIncrementalVersion());
         Mockito.when(configDao.queryByTaskId(1L)).thenReturn(config());
@@ -84,6 +89,13 @@ class SyncRunCoordinatorServiceImplTest {
                 Mockito.isNull(),
                 Mockito.isNull()
         )).thenReturn(batch());
+        Mockito.when(batchService.createBatchForRun(
+                Mockito.any(),
+                Mockito.any(),
+                Mockito.eq(SyncTriggerType.RETRY),
+                Mockito.eq(SyncRunMode.RERUN)
+        )).thenReturn(batch());
+        Mockito.when(batchService.getByBatchId("old_batch")).thenReturn(originalBatch());
         Mockito.when(batchService.updateStatus(Mockito.anyString(), Mockito.any(), Mockito.any())).thenReturn(true);
         Mockito.when(batchService.updateMetrics(Mockito.anyString(), Mockito.any(), Mockito.any(), Mockito.any()))
                 .thenReturn(true);
@@ -92,6 +104,7 @@ class SyncRunCoordinatorServiceImplTest {
             run.setId(11L);
             return 11L;
         });
+        Mockito.when(runService.getByRunId("old_run")).thenReturn(originalRun());
         Mockito.when(runService.updateGeneratedHocon(Mockito.anyString(), Mockito.anyString())).thenReturn(true);
         Mockito.when(runService.updateSeatunnelJob(Mockito.anyString(), Mockito.anyString(), Mockito.anyString()))
                 .thenReturn(true);
@@ -208,6 +221,61 @@ class SyncRunCoordinatorServiceImplTest {
                 .advanceWatermark(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
     }
 
+    @Test
+    void rerunSameRangeShouldUseOriginalRangeAndAdvanceAfterSuccess() {
+        VerifyResult verifyResult = new VerifyResult();
+        verifyResult.setPassed(true);
+        verifyResult.setSourceCount(100L);
+        verifyResult.setSinkCount(100L);
+        verifyResult.setErrorCount(0L);
+        Mockito.when(verifyService.verifyRun(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.anyMap()))
+                .thenReturn(verifyResult);
+
+        SyncRunRerunRequest request = new SyncRunRerunRequest();
+        request.setMode("RERUN_SAME_RANGE");
+        request.setWaitForFinish(true);
+        RunResultVO result = service.rerun("old_run", request);
+
+        Assertions.assertTrue(result.getWatermarkAdvanced());
+        Mockito.verify(watermarkService, Mockito.never()).calculateNextRange(Mockito.any(), Mockito.anyMap());
+        Mockito.verify(batchService).createBatchForRun(
+                Mockito.any(),
+                Mockito.argThat(range -> "2026-06-01 00:00:00".equals(range.getStartValue())
+                        && "2026-06-02 00:00:00".equals(range.getEndValue())),
+                Mockito.eq(SyncTriggerType.RETRY),
+                Mockito.eq(SyncRunMode.RERUN)
+        );
+        Mockito.verify(watermarkService).advanceWatermark(
+                Mockito.eq(1L),
+                Mockito.eq("default"),
+                Mockito.eq("2026-06-02 00:00:00"),
+                Mockito.eq(11L),
+                Mockito.eq("batch_1")
+        );
+    }
+
+    @Test
+    void rerunSameRangeVerificationFailedShouldNotAdvanceWatermark() {
+        VerifyResult verifyResult = new VerifyResult();
+        verifyResult.setPassed(false);
+        verifyResult.setHasBlockingFailure(true);
+        verifyResult.setErrorMessage("rerun count mismatch");
+        Mockito.when(verifyService.verifyRun(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.anyMap()))
+                .thenReturn(verifyResult);
+
+        SyncRunRerunRequest request = new SyncRunRerunRequest();
+        request.setMode("RERUN_SAME_RANGE");
+
+        ServiceException exception = Assertions.assertThrows(
+                ServiceException.class,
+                () -> service.rerun("old_run", request)
+        );
+
+        Assertions.assertTrue(exception.getMessage().contains("Sync verification failed"));
+        Mockito.verify(watermarkService, Mockito.never())
+                .advanceWatermark(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+    }
+
     private RunTaskRequest request() {
         RunTaskRequest request = new RunTaskRequest();
         request.setWaitForFinish(true);
@@ -292,6 +360,35 @@ class SyncRunCoordinatorServiceImplTest {
                 .runMode(SyncRunMode.NORMAL)
                 .status(SyncBatchStatus.CREATED)
                 .build();
+    }
+
+    private SyncRunEntity originalRun() {
+        return SyncRunEntity.builder()
+                .id(10L)
+                .runId("old_run")
+                .taskId(1L)
+                .taskVersionId(2L)
+                .batchId("old_batch")
+                .status(SyncRunStatus.FAILED)
+                .build();
+    }
+
+    private SyncBatchEntity originalBatch() {
+        return SyncBatchEntity.builder()
+                .id(20L)
+                .batchId("old_batch")
+                .taskId(1L)
+                .taskCode("task_1")
+                .batchStartValue("2026-06-01 00:00:00")
+                .batchEndValue("2026-06-02 00:00:00")
+                .batchStartTime(toDate(LocalDateTime.of(2026, 6, 1, 0, 0, 0)))
+                .batchEndTime(toDate(LocalDateTime.of(2026, 6, 2, 0, 0, 0)))
+                .status(SyncBatchStatus.FAILED)
+                .build();
+    }
+
+    private Date toDate(LocalDateTime value) {
+        return Date.from(value.atZone(ZoneId.systemDefault()).toInstant());
     }
 
     private SyncSubmitJobResult submitResult() {

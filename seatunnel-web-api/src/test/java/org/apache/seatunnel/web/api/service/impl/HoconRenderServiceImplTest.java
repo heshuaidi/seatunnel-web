@@ -5,7 +5,9 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 class HoconRenderServiceImplTest {
 
@@ -58,5 +60,38 @@ class HoconRenderServiceImplTest {
                 "select count(*) from t where batch_id = 'batch-1' and update_time >= '2026-06-01 00:00:00'",
                 rendered
         );
+    }
+
+    @Test
+    void extractVariablesShouldReturnUniqueVariablesInOrder() {
+        Set<String> variables = service.extractVariables(
+                "source { user='${source_username}' password='${source_password}' where='id <= ${batch_end_value}' again='${source_username}' }"
+        );
+
+        Assertions.assertEquals(
+                List.of("source_username", "source_password", "batch_end_value"),
+                List.copyOf(variables)
+        );
+    }
+
+    @Test
+    void findMissingVariablesShouldReturnAllMissingVariables() {
+        List<String> missingVariables = service.findMissingVariables(
+                "source { user='${source_username}' password='${source_password}' end='${batch_end_value}' }",
+                Map.of("source_username", "st_lab")
+        );
+
+        Assertions.assertEquals(List.of("source_password", "batch_end_value"), missingVariables);
+    }
+
+    @Test
+    void findMissingVariablesShouldOnlyReturnVariableNamesForSensitiveValues() {
+        List<String> missingVariables = service.findMissingVariables(
+                "source { password='${source_password}' token='${source_token}' }",
+                Map.of("source_password", "plain-password")
+        );
+
+        Assertions.assertEquals(List.of("source_token"), missingVariables);
+        Assertions.assertFalse(missingVariables.toString().contains("plain-password"));
     }
 }

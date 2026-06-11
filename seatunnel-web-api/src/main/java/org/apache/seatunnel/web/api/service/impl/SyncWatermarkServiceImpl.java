@@ -5,6 +5,7 @@ import org.apache.seatunnel.web.api.service.SyncWatermarkService;
 import org.apache.seatunnel.web.api.service.model.WatermarkRange;
 import org.apache.seatunnel.web.common.constants.SyncConstants;
 import org.apache.seatunnel.web.common.enums.SyncIncrementalStrategy;
+import org.apache.seatunnel.web.common.enums.SyncRunMode;
 import org.apache.seatunnel.web.common.enums.SyncSourceType;
 import org.apache.seatunnel.web.core.exceptions.ServiceException;
 import org.apache.seatunnel.web.dao.entity.SyncIncrementalConfigEntity;
@@ -16,6 +17,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -111,6 +113,10 @@ public class SyncWatermarkServiceImpl extends SyncServiceSupport implements Sync
             range.setStartValue(formatDateTime(startTime));
             range.setEndValue(formatDateTime(endTime));
             range.setValueType(valueType(config));
+            range.setCurrentWatermark(currentValue(config));
+            range.setLookbackApplied(false);
+            range.setMaxBatchSecondsApplied(false);
+            range.setWarnings(List.of());
             range.setBackfill(true);
             range.setAdvanceWatermark(allowAdvance);
             return range;
@@ -125,12 +131,25 @@ public class SyncWatermarkServiceImpl extends SyncServiceSupport implements Sync
             range.setStartValue(startValue);
             range.setEndValue(endValue);
             range.setValueType(valueType(config));
+            range.setCurrentWatermark(currentValue(config));
+            range.setLookbackApplied(false);
+            range.setMaxBatchSecondsApplied(false);
+            range.setWarnings(List.of());
             range.setBackfill(true);
             range.setAdvanceWatermark(allowAdvance);
             return range;
         }
 
         throw unsupportedStrategy(config.getStrategy());
+    }
+
+    @Override
+    public WatermarkRange previewRange(Long taskId, SyncRunMode runMode, Map<String, Object> runParams) {
+        if (runMode == SyncRunMode.BACKFILL) {
+            Boolean advanceWatermark = parseBooleanParam(runParams, "advanceWatermark", "advance_watermark");
+            return calculateBackfillRange(taskId, runParams, advanceWatermark);
+        }
+        return calculateNextRange(taskId, runParams);
     }
 
     @Override
@@ -186,9 +205,12 @@ public class SyncWatermarkServiceImpl extends SyncServiceSupport implements Sync
     }
 
     private WatermarkRange calculateNextUpdateTimeRange(SyncIncrementalConfigEntity config) {
-        String currentValue = currentValue(config);
+        String actualCurrentValue = currentValue(config);
+        String currentValue = actualCurrentValue;
+        List<String> warnings = new ArrayList<>();
         if (isBlank(currentValue)) {
             currentValue = config.getStartValue();
+            warnings.add("Current watermark is empty, use incremental startValue");
         }
         if (isBlank(currentValue)) {
             throw new ServiceException("UPDATE_TIME_RANGE requires current watermark or startValue");
@@ -198,10 +220,12 @@ public class SyncWatermarkServiceImpl extends SyncServiceSupport implements Sync
         LocalDateTime startTime = parseDateTime(currentValue).minusSeconds(lookbackSeconds);
         LocalDateTime endTime = LocalDateTime.now();
 
+        boolean maxBatchSecondsApplied = false;
         if (config.getMaxBatchSeconds() != null && config.getMaxBatchSeconds() > 0) {
             LocalDateTime maxEndTime = startTime.plusSeconds(config.getMaxBatchSeconds());
             if (endTime.isAfter(maxEndTime)) {
                 endTime = maxEndTime;
+                maxBatchSecondsApplied = true;
             }
         }
 
@@ -212,20 +236,27 @@ public class SyncWatermarkServiceImpl extends SyncServiceSupport implements Sync
         range.setStartValue(formatDateTime(startTime));
         range.setEndValue(formatDateTime(endTime));
         range.setValueType(valueType(config));
+        range.setCurrentWatermark(isBlank(actualCurrentValue) ? currentValue : actualCurrentValue);
+        range.setLookbackApplied(lookbackSeconds > 0);
+        range.setMaxBatchSecondsApplied(maxBatchSecondsApplied);
+        range.setWarnings(warnings);
         range.setBackfill(false);
         range.setAdvanceWatermark(true);
         return range;
     }
 
     private WatermarkRange calculateNextIdRange(SyncIncrementalConfigEntity config, Map<String, Object> runParams) {
-        String currentValue = currentValue(config);
+        String actualCurrentValue = currentValue(config);
+        String currentValue = actualCurrentValue;
+        List<String> warnings = new ArrayList<>();
         if (isBlank(currentValue)) {
             currentValue = isBlank(config.getStartValue()) ? "0" : config.getStartValue();
+            warnings.add("Current watermark is empty, use incremental startValue or 0");
         }
 
         String endValue = findParam(runParams, "batchEndValue", "batch_end_value");
         if (isBlank(endValue)) {
-            throw new ServiceException("ID_RANGE requires batchEndValue in run params in current version");
+            throw new ServiceException("ID_RANGE requires batchEndValue in run params");
         }
 
         WatermarkRange range = new WatermarkRange();
@@ -233,6 +264,10 @@ public class SyncWatermarkServiceImpl extends SyncServiceSupport implements Sync
         range.setStartValue(currentValue);
         range.setEndValue(endValue);
         range.setValueType(valueType(config));
+        range.setCurrentWatermark(isBlank(actualCurrentValue) ? currentValue : actualCurrentValue);
+        range.setLookbackApplied(false);
+        range.setMaxBatchSecondsApplied(false);
+        range.setWarnings(warnings);
         range.setBackfill(false);
         range.setAdvanceWatermark(true);
         return range;
@@ -281,6 +316,23 @@ public class SyncWatermarkServiceImpl extends SyncServiceSupport implements Sync
             value = params.get(snakeKey);
         }
         return value == null ? null : String.valueOf(value);
+    }
+
+    private Boolean parseBooleanParam(Map<String, Object> params, String camelKey, String snakeKey) {
+        if (params == null || params.isEmpty()) {
+            return null;
+        }
+        Object value = params.get(camelKey);
+        if (value == null) {
+            value = params.get(snakeKey);
+        }
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Boolean) {
+            return (Boolean) value;
+        }
+        return Boolean.parseBoolean(String.valueOf(value));
     }
 
     private LocalDateTime parseDateTime(String value) {

@@ -3,6 +3,7 @@ package org.apache.seatunnel.web.api.service;
 import org.apache.seatunnel.web.spi.bean.dto.BackfillTaskRequest;
 import org.apache.seatunnel.web.spi.bean.dto.PreviewHoconRequest;
 import org.apache.seatunnel.web.spi.bean.dto.RunTaskRequest;
+import org.apache.seatunnel.web.spi.bean.dto.SyncRunRerunRequest;
 import org.apache.seatunnel.web.spi.bean.vo.HoconPreviewVO;
 import org.apache.seatunnel.web.spi.bean.vo.RunDetailVO;
 import org.apache.seatunnel.web.spi.bean.vo.RunResultVO;
@@ -17,6 +18,8 @@ public interface SyncRunCoordinatorService {
     RunResultVO runTask(String taskCode, RunTaskRequest request);
 
     RunResultVO backfillTask(String taskCode, BackfillTaskRequest request);
+
+    RunResultVO rerun(String runId, SyncRunRerunRequest request);
 
     RunDetailVO getRun(String runId);
 
