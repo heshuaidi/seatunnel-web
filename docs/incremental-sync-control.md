@@ -139,6 +139,63 @@ FTP_FILE 当前只提供 scanner 接口和明确失败的骨架实现。仓库�
 FTP file discovery is not implemented because no reusable FTP datasource client was found
 ```
 
+## 第五阶段范围
+
+第五阶段新增 Fab MES/SPC JDBC translator 内置模板第一版，把通用增量控制模块应用到旧 translator 改造场景：
+
+```text
+MES / SPC Oracle
+  -> SeaTunnel JDBC/SQL 增量 source
+  -> Sql transform
+  -> StarRocks xchg_meas_header / xchg_meas_site / xchg_meas_error
+```
+
+新增内容：
+
+- 内置模板 `FAB_MES_SPC_JDBC_TRANSLATOR`。
+- StarRocks xchg 层 DDL 示例：`docs/sql/fab_mes_spc_xchg_starrocks.sql`。
+- 通用 HOCON 模板：`docs/templates/fab_mes_spc_jdbc_translator.conf`。
+- Lab Oracle/StarRocks HOCON 示例：`docs/templates/fab_mes_spc_jdbc_translator_lab_oracle_starrocks.conf`。
+- 模板创建 API，用现有 sync metadata 表初始化 task/version/incremental_config/watermark/check_config。
+- 业务说明文档：`docs/fab-mes-spc-translator-template.md`。
+
+旧链路与新链路映射：
+
+- `translator.exe` 的抽取与标准化逻辑由 SeaTunnel JDBC source + Sql transform 承接。
+- 专有父子文本文件的 header/site/error 结构映射到 StarRocks xchg 表。
+- `loader.exe` publish 到分析主库的阶段本轮不做，后续可扩展为 xchg -> eda_stg -> dwd/ads。
+
+StarRocks xchg 表：
+
+- `xchg_batch`：批次摘要。
+- `xchg_meas_header`：量测 header。
+- `xchg_meas_site`：site/die 明细。
+- `xchg_meas_error`：translator 校验错误。
+
+模板变量包括：
+
+- `${batch_id}`、`${run_id}`、`${task_code}`
+- `${source_system}`
+- `${source_jdbc_url}`、`${source_jdbc_driver}`、`${source_username}`、`${source_password}`
+- `${header_source_sql}`、`${site_source_sql}`
+- `${batch_start_time}`、`${batch_end_time}`、`${batch_start_value}`、`${batch_end_value}`
+- `${starrocks_node_urls}`、`${starrocks_base_url}`、`${starrocks_username}`、`${starrocks_password}`、`${starrocks_database}`
+
+默认 check_config 规则：
+
+- `source_count`：基于 header SQL 统计源端 header 数。
+- `sink_header_count`：统计 `xchg_meas_header`，并与 `source_count` 比较。
+- `sink_site_count`：统计 `xchg_meas_site`，只作为独立指标。
+- `error_count`：统计 `xchg_meas_error`，期望为 0。
+- 如果 `sourceDatasourceId` 或 `sinkDatasourceId` 为空，不创建默认 check，并在响应 warnings 中说明。
+
+当前限制：
+
+- 不做 loader publish 到 dwd/ads。
+- 不做 WAT/CP 文件 parser。
+- header/site SQL 需要用户按真实 MES/SPC 表结构提供。
+- 默认 check 只提供基础 count 校验。
+
 ## HOCON 模板变量
 
 模板使用 `${xxx}` 形式引用变量。变量缺失时会抛出异常，不会静默替换为空。时间类型统一格式化为：
@@ -389,6 +446,9 @@ POST /api/v1/sync/tasks/{taskCode}/discover-files
 GET  /api/v1/sync/tasks/{taskCode}/files
 GET  /api/v1/sync/batches/{batchId}/files
 POST /api/v1/sync/batches/{batchId}/files/retry
+GET  /api/v1/sync/templates
+GET  /api/v1/sync/templates/{templateCode}
+POST /api/v1/sync/templates/fab-mes-spc-jdbc/create-task
 GET  /api/v1/sync/tasks/{taskCode}/checks
 POST /api/v1/sync/tasks/{taskCode}/checks
 PUT  /api/v1/sync/tasks/{taskCode}/checks/{checkCode}
@@ -446,6 +506,37 @@ HOCON 预览请求示例：
 - `runId`
 - `fileName`
 - `filePath`
+
+Fab MES/SPC 模板创建请求示例：
+
+```json
+{
+  "taskCode": "fab_mes_spc_measure",
+  "taskName": "Fab MES/SPC Measure Translator",
+  "clientId": 1,
+  "description": "MES/SPC Oracle incremental translator to StarRocks xchg",
+  "sourceSystem": "SPC",
+  "watermarkField": "UPDATE_TIME",
+  "watermarkFieldType": "DATETIME",
+  "startValue": "2026-01-01 00:00:00",
+  "lookbackSeconds": 300,
+  "maxBatchSeconds": 3600,
+  "sourceJdbcUrl": "${source_jdbc_url}",
+  "sourceJdbcDriver": "oracle.jdbc.OracleDriver",
+  "sourceUsername": "${source_username}",
+  "sourcePassword": "${source_password}",
+  "headerSourceSql": "SELECT ... WHERE UPDATE_TIME >= TO_TIMESTAMP('${batch_start_time}', 'YYYY-MM-DD HH24:MI:SS') AND UPDATE_TIME < TO_TIMESTAMP('${batch_end_time}', 'YYYY-MM-DD HH24:MI:SS')",
+  "siteSourceSql": "SELECT ... WHERE UPDATE_TIME >= TO_TIMESTAMP('${batch_start_time}', 'YYYY-MM-DD HH24:MI:SS') AND UPDATE_TIME < TO_TIMESTAMP('${batch_end_time}', 'YYYY-MM-DD HH24:MI:SS')",
+  "starrocksNodeUrls": "\"starrocks.lab:8030\"",
+  "starrocksBaseUrl": "jdbc:mysql://starrocks.lab:9030/",
+  "starrocksUsername": "${starrocks_username}",
+  "starrocksPassword": "${starrocks_password}",
+  "starrocksDatabase": "st_test",
+  "sourceDatasourceId": 1,
+  "sinkDatasourceId": 2,
+  "enableDefaultChecks": true
+}
+```
 
 source_count 配置示例：
 

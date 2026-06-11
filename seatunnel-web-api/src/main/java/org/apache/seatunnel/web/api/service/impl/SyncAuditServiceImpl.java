@@ -2,6 +2,7 @@ package org.apache.seatunnel.web.api.service.impl;
 
 import jakarta.annotation.Resource;
 import org.apache.seatunnel.web.api.service.SyncAuditService;
+import org.apache.seatunnel.web.api.utils.SyncSensitiveMaskUtils;
 import org.apache.seatunnel.web.common.enums.SyncAuditEventType;
 import org.apache.seatunnel.web.common.enums.SyncAuditLevel;
 import org.apache.seatunnel.web.common.utils.JSONUtils;
@@ -119,6 +120,6 @@ public class SyncAuditServiceImpl extends SyncServiceSupport implements SyncAudi
         if (detail instanceof String) {
             return (String) detail;
         }
-        return JSONUtils.toJsonString(detail);
+        return JSONUtils.toJsonString(SyncSensitiveMaskUtils.mask(detail));
     }
 }
