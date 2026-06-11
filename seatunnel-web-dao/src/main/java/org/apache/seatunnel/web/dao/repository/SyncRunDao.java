@@ -12,4 +12,8 @@ public interface SyncRunDao extends IDao<SyncRunEntity> {
     List<SyncRunEntity> listByTaskId(Long taskId);
 
     boolean updateStatus(String runId, SyncRunStatus status, String errorMessage);
+
+    boolean updateGeneratedHocon(String runId, String generatedHocon);
+
+    boolean updateSeatunnelJob(String runId, String seatunnelJobId, String seatunnelJobName);
 }

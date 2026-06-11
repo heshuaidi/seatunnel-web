@@ -38,6 +38,8 @@ public class SyncTaskEntity {
 
     private SyncEngineType engineType;
 
+    private Long clientId;
+
     private Boolean incrementalEnabled;
 
     private SyncIncrementalStrategy incrementalStrategy;

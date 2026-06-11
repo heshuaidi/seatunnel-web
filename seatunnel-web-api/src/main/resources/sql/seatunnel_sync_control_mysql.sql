@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS `t_seatunnel_web_sync_task`
     `source_type`             varchar(30)  NOT NULL COMMENT '源类型：JDBC / SQL / LOCAL_FILE / FTP_FILE',
     `sink_type`               varchar(30)  NOT NULL COMMENT '目标类型：STARROCKS / JDBC / LOCAL_FILE',
     `engine_type`             varchar(30)  NOT NULL DEFAULT 'ZETA' COMMENT '执行引擎类型',
+    `client_id`               bigint                DEFAULT NULL COMMENT 'SeaTunnel Client ID',
     `incremental_enabled`     tinyint(1)   NOT NULL DEFAULT 0 COMMENT '是否启用增量：0否 1是',
     `incremental_strategy`    varchar(50)           DEFAULT NULL COMMENT '增量策略',
     `status`                  varchar(30)  NOT NULL COMMENT '任务状态：DRAFT / PUBLISHED / OFFLINE',
@@ -25,6 +26,7 @@ CREATE TABLE IF NOT EXISTS `t_seatunnel_web_sync_task`
     `update_time`             datetime     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_sync_task_code` (`task_code`),
+    KEY                       `idx_sync_task_client` (`client_id`),
     KEY                       `idx_sync_task_status` (`status`),
     KEY                       `idx_sync_task_source_sink` (`source_type`, `sink_type`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='通用增量同步任务主表';

@@ -8,11 +8,13 @@ import lombok.Getter;
 @Getter
 public enum SyncAuditEventType {
     CREATE_BATCH("CREATE_BATCH", "创建批次"),
+    CREATE_RUN("CREATE_RUN", "创建运行"),
     READ_WATERMARK("READ_WATERMARK", "读取 watermark"),
     DISCOVER_FILES("DISCOVER_FILES", "发现文件"),
     RENDER_HOCON("RENDER_HOCON", "渲染 HOCON"),
     SUBMIT_JOB("SUBMIT_JOB", "提交任务"),
     POLL_STATUS("POLL_STATUS", "轮询状态"),
+    VERIFYING("VERIFYING", "运行校验"),
     ADVANCE_WATERMARK("ADVANCE_WATERMARK", "推进 watermark"),
     RUN_SUCCESS("RUN_SUCCESS", "运行成功"),
     RUN_FAILED("RUN_FAILED", "运行失败");

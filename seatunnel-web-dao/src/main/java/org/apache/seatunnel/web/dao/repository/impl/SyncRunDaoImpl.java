@@ -58,6 +58,46 @@ public class SyncRunDaoImpl extends BaseDao<SyncRunEntity, SyncRunMapper> implem
         entity.setStatus(status);
         entity.setErrorMessage(errorMessage);
         entity.setUpdateTime(new Date());
+        if (status == SyncRunStatus.SUBMITTED) {
+            entity.setSubmitTime(new Date());
+        }
+        if (status == SyncRunStatus.RUNNING) {
+            entity.setStartTime(new Date());
+        }
+        if (status == SyncRunStatus.SUCCESS || status == SyncRunStatus.FAILED || status == SyncRunStatus.CANCELED) {
+            entity.setEndTime(new Date());
+        }
+        return syncRunMapper.update(
+                entity,
+                new LambdaUpdateWrapper<SyncRunEntity>()
+                        .eq(SyncRunEntity::getRunId, runId)
+        ) > 0;
+    }
+
+    @Override
+    public boolean updateGeneratedHocon(String runId, String generatedHocon) {
+        if (isBlank(runId)) {
+            return false;
+        }
+        SyncRunEntity entity = new SyncRunEntity();
+        entity.setGeneratedHocon(generatedHocon);
+        entity.setUpdateTime(new Date());
+        return syncRunMapper.update(
+                entity,
+                new LambdaUpdateWrapper<SyncRunEntity>()
+                        .eq(SyncRunEntity::getRunId, runId)
+        ) > 0;
+    }
+
+    @Override
+    public boolean updateSeatunnelJob(String runId, String seatunnelJobId, String seatunnelJobName) {
+        if (isBlank(runId)) {
+            return false;
+        }
+        SyncRunEntity entity = new SyncRunEntity();
+        entity.setSeatunnelJobId(seatunnelJobId);
+        entity.setSeatunnelJobName(seatunnelJobName);
+        entity.setUpdateTime(new Date());
         return syncRunMapper.update(
                 entity,
                 new LambdaUpdateWrapper<SyncRunEntity>()

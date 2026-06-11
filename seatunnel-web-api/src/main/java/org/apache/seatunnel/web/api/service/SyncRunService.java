@@ -18,4 +18,8 @@ public interface SyncRunService {
     List<SyncRunEntity> listByTaskId(Long taskId);
 
     Boolean updateStatus(String runId, SyncRunStatus status, String errorMessage);
+
+    Boolean updateGeneratedHocon(String runId, String generatedHocon);
+
+    Boolean updateSeatunnelJob(String runId, String seatunnelJobId, String seatunnelJobName);
 }

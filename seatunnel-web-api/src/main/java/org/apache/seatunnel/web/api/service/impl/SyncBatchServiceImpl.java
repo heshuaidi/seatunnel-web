@@ -2,16 +2,31 @@ package org.apache.seatunnel.web.api.service.impl;
 
 import jakarta.annotation.Resource;
 import org.apache.seatunnel.web.api.service.SyncBatchService;
+import org.apache.seatunnel.web.api.service.model.WatermarkRange;
 import org.apache.seatunnel.web.common.enums.SyncBatchStatus;
+import org.apache.seatunnel.web.common.enums.SyncRunMode;
+import org.apache.seatunnel.web.common.enums.SyncTriggerType;
+import org.apache.seatunnel.web.core.exceptions.ServiceException;
 import org.apache.seatunnel.web.dao.entity.SyncBatchEntity;
+import org.apache.seatunnel.web.dao.entity.SyncTaskEntity;
 import org.apache.seatunnel.web.dao.repository.SyncBatchDao;
+import org.apache.seatunnel.web.spi.enums.Status;
 import org.springframework.stereotype.Service;
 
+import java.security.SecureRandom;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.Date;
 import java.util.List;
 
 @Service
 public class SyncBatchServiceImpl extends SyncServiceSupport implements SyncBatchService {
+
+    private static final DateTimeFormatter BATCH_ID_TIME_FORMATTER =
+            DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
+
+    private static final SecureRandom RANDOM = new SecureRandom();
 
     @Resource
     private SyncBatchDao syncBatchDao;
@@ -64,5 +79,60 @@ public class SyncBatchServiceImpl extends SyncServiceSupport implements SyncBatc
     @Override
     public Boolean updateStatus(String batchId, SyncBatchStatus status, String errorMessage) {
         return syncBatchDao.updateStatus(batchId, status, errorMessage);
+    }
+
+    @Override
+    public SyncBatchEntity createBatchForRun(
+            SyncTaskEntity task,
+            WatermarkRange range,
+            SyncTriggerType triggerType,
+            SyncRunMode runMode
+    ) {
+        requireEntity(task, "syncTask");
+        requireEntity(range, "watermarkRange");
+        if (isBlank(task.getTaskCode())) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "taskCode");
+        }
+        if (triggerType == null) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "triggerType");
+        }
+        if (runMode == null) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "runMode");
+        }
+
+        Date now = now();
+        SyncBatchEntity entity = SyncBatchEntity.builder()
+                .batchId(generateBatchId(task.getTaskCode()))
+                .taskId(task.getId())
+                .taskCode(task.getTaskCode())
+                .triggerType(triggerType)
+                .runMode(runMode)
+                .batchStartValue(range.getStartValue())
+                .batchEndValue(range.getEndValue())
+                .batchStartTime(toDate(range.getStartTime()))
+                .batchEndTime(toDate(range.getEndTime()))
+                .status(SyncBatchStatus.CREATED)
+                .createTime(now)
+                .updateTime(now)
+                .build();
+
+        syncBatchDao.insert(entity);
+        return entity;
+    }
+
+    private String generateBatchId(String taskCode) {
+        int random = RANDOM.nextInt(1_000_000);
+        return taskCode
+                + "_"
+                + BATCH_ID_TIME_FORMATTER.format(LocalDateTime.now())
+                + "_"
+                + String.format("%06d", random);
+    }
+
+    private Date toDate(LocalDateTime value) {
+        if (value == null) {
+            return null;
+        }
+        return Date.from(value.atZone(ZoneId.systemDefault()).toInstant());
     }
 }

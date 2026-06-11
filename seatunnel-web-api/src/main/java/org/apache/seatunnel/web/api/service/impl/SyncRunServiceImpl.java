@@ -65,4 +65,14 @@ public class SyncRunServiceImpl extends SyncServiceSupport implements SyncRunSer
     public Boolean updateStatus(String runId, SyncRunStatus status, String errorMessage) {
         return syncRunDao.updateStatus(runId, status, errorMessage);
     }
+
+    @Override
+    public Boolean updateGeneratedHocon(String runId, String generatedHocon) {
+        return syncRunDao.updateGeneratedHocon(runId, generatedHocon);
+    }
+
+    @Override
+    public Boolean updateSeatunnelJob(String runId, String seatunnelJobId, String seatunnelJobName) {
+        return syncRunDao.updateSeatunnelJob(runId, seatunnelJobId, seatunnelJobName);
+    }
 }
