@@ -432,6 +432,84 @@ sink_count actual = 100
 
 校验通过后，`SOURCE_COUNT`、`SINK_COUNT`、`ERROR_COUNT` 的实际值会同步回写到 `t_seatunnel_web_sync_batch` 和 `t_seatunnel_web_sync_run` 的统计字段。
 
+## 第六阶段：Fab loader publish 模板
+
+第五阶段的 Fab MES/SPC translator 模板负责：
+
+```text
+MES/SPC Oracle -> SeaTunnel -> StarRocks xchg_meas_header / xchg_meas_site / xchg_meas_error
+```
+
+第六阶段新增 loader publish 模板，负责旧 `loader.exe` 的第一段迁移：
+
+```text
+StarRocks xchg 层 -> SeaTunnel -> eda_stg_measure_header / eda_stg_measure_site / eda_stg_measure_error
+```
+
+本阶段不实现 SQL 工作流引擎，也不执行 `eda_stg -> dwd/ads`。DWD/ADS publish 以 StarRocks SQL 模板提供：
+
+- `docs/sql/fab_loader_publish_starrocks.sql`：eda_stg、dwd、ads 表 DDL 示例。
+- `docs/sql/fab_loader_publish_dwd_ads.sql`：eda_stg 发布到 dwd/ads 的 SQL 示例。
+- `docs/templates/fab_loader_publish_xchg_to_stg.conf`：xchg 到 eda_stg 的 SeaTunnel HOCON。
+- `docs/fab-loader-publish-template.md`：业务模板说明。
+
+模板 code：
+
+```text
+FAB_LOADER_PUBLISH_XCHG_TO_STG
+```
+
+### 非增量任务运行
+
+loader publish 任务不拥有 watermark，创建任务时：
+
+- `task_type = BATCH`
+- `source_type = SQL`
+- `sink_type = STARROCKS`
+- `engine_type = ZETA`
+- `incremental_enabled = 0`
+- 不创建 `t_seatunnel_web_sync_incremental_config`
+- 不创建 `t_seatunnel_web_sync_watermark`
+
+`incremental_enabled = 0` 的任务运行时会：
+
+1. 跳过 incremental_config 和 watermark 读取。
+2. 创建系统 sync batch 和 run。
+3. 使用系统变量与 run params 渲染 HOCON。
+4. 提交 SeaTunnel。
+5. SeaTunnel success 后执行 verification。
+6. verification passed 后标记 batch/run SUCCESS。
+7. verification failed 或 SeaTunnel failed 后标记 batch/run FAILED。
+8. 不推进 watermark。
+
+### 系统 batch_id 与业务 xchg_batch_id
+
+loader publish 同时存在两个批次概念：
+
+- `${batch_id}`：seatunnel-web 为本次 loader run 生成的系统 batch id。
+- `${xchg_batch_id}`：translator 已生成的业务 batch id，用于过滤 xchg 和 stg 数据。
+
+HOCON 查询 xchg 表时必须使用：
+
+```sql
+WHERE batch_id = '${xchg_batch_id}'
+```
+
+不要使用系统 `${batch_id}` 过滤 xchg 表。
+
+### 默认 check 规则
+
+如果 `enableDefaultChecks = true` 且 `starrocksDatasourceId` 不为空，create-task 会创建：
+
+- `xchg_header_count >= 0`
+- `stg_header_count == xchg_header_count`
+- `xchg_site_count >= 0`
+- `stg_site_count == xchg_site_count`
+- `xchg_error_count >= 0`
+- `stg_error_count == xchg_error_count`
+
+loader publish 不要求 error count 等于 0。translator 可能把错误记录写入 `xchg_meas_error`，loader 需要把这些错误记录同步到 `eda_stg_measure_error`。
+
 ## 后端 API
 
 路径按项目现有规范使用 `/api/v1` 前缀：
@@ -449,6 +527,7 @@ POST /api/v1/sync/batches/{batchId}/files/retry
 GET  /api/v1/sync/templates
 GET  /api/v1/sync/templates/{templateCode}
 POST /api/v1/sync/templates/fab-mes-spc-jdbc/create-task
+POST /api/v1/sync/templates/fab-loader-publish/create-task
 GET  /api/v1/sync/tasks/{taskCode}/checks
 POST /api/v1/sync/tasks/{taskCode}/checks
 PUT  /api/v1/sync/tasks/{taskCode}/checks/{checkCode}
@@ -535,6 +614,51 @@ Fab MES/SPC 模板创建请求示例：
   "sourceDatasourceId": 1,
   "sinkDatasourceId": 2,
   "enableDefaultChecks": true
+}
+```
+
+Fab loader publish 模板创建请求示例：
+
+```json
+{
+  "taskCode": "fab_loader_publish_measure",
+  "taskName": "Fab Loader Publish Measure",
+  "clientId": 1,
+  "description": "Publish xchg measure tables to eda_stg tables",
+  "sourceTaskCode": "fab_mes_spc_measure",
+  "sourceSystem": "SPC",
+  "batchIdMode": "MANUAL_PARAM",
+  "starrocksJdbcUrl": "${starrocks_jdbc_url}",
+  "starrocksJdbcDriver": "com.mysql.cj.jdbc.Driver",
+  "starrocksNodeUrls": "\"starrocks.lab:8030\"",
+  "starrocksBaseUrl": "jdbc:mysql://starrocks.lab:9030/",
+  "starrocksUsername": "${starrocks_username}",
+  "starrocksPassword": "${starrocks_password}",
+  "starrocksDatabase": "st_test",
+  "xchgHeaderTable": "xchg_meas_header",
+  "xchgSiteTable": "xchg_meas_site",
+  "xchgErrorTable": "xchg_meas_error",
+  "stgHeaderTable": "eda_stg_measure_header",
+  "stgSiteTable": "eda_stg_measure_site",
+  "stgErrorTable": "eda_stg_measure_error",
+  "starrocksDatasourceId": 2,
+  "enableDefaultChecks": true
+}
+```
+
+Fab loader publish 运行请求示例：
+
+```json
+{
+  "triggerType": "MANUAL",
+  "runMode": "NORMAL",
+  "waitForFinish": true,
+  "params": {
+    "xchg_batch_id": "fab_mes_spc_measure_20260612153022_482913",
+    "starrocks_jdbc_url": "jdbc:mysql://starrocks.lab:9030/st_test",
+    "starrocks_username": "st_lab",
+    "starrocks_password": "st_lab_pass"
+  }
 }
 ```
 

@@ -111,8 +111,8 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
         SyncTaskEntity task = loadTaskByCode(taskCode);
         SyncTaskVersionEntity version = loadRunnableVersion(task);
         Map<String, Object> params = request == null ? Map.of() : nullToEmpty(request.getParams());
-        SyncIncrementalConfigEntity config = loadConfig(task.getId());
-        WatermarkRange range = isFileTask(task, config)
+        SyncIncrementalConfigEntity config = loadConfigIfIncremental(task);
+        WatermarkRange range = !isIncrementalEnabled(task) || isFileTask(task, config)
                 ? null
                 : syncWatermarkService.calculateNextRange(task.getId(), params);
         Map<String, Object> variables = buildVariables(
@@ -228,7 +228,10 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
         SyncTaskEntity task = loadTaskByCode(taskCode);
         validateRunnableTask(task);
         SyncTaskVersionEntity version = loadRunnableVersion(task);
-        SyncIncrementalConfigEntity config = loadConfig(task.getId());
+        SyncIncrementalConfigEntity config = loadConfigIfIncremental(task);
+        if (!isIncrementalEnabled(task)) {
+            return executeNonIncrementalTask(task, version, params, triggerType, runMode, waitForFinish);
+        }
         if (isFileTask(task, config)) {
             return executeFileTask(task, version, config, params, triggerType, runMode, waitForFinish);
         }
@@ -384,6 +387,140 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
                     task.getTaskCode(),
                     SyncAuditEventType.RUN_FAILED,
                     "Sync run failed, watermark is not advanced",
+                    Map.of("errorMessage", message)
+            );
+            if (e instanceof ServiceException) {
+                throw (ServiceException) e;
+            }
+            throw new ServiceException(message, e);
+        }
+    }
+
+    private RunResultVO executeNonIncrementalTask(
+            SyncTaskEntity task,
+            SyncTaskVersionEntity version,
+            Map<String, Object> params,
+            SyncTriggerType triggerType,
+            SyncRunMode runMode,
+            boolean waitForFinish
+    ) {
+        SyncBatchEntity batch = null;
+        SyncRunEntity run = null;
+        Map<String, Object> variables = Collections.emptyMap();
+
+        try {
+            batch = syncBatchService.createFileBatchForRun(task, triggerType, runMode, null, null);
+            syncAuditService.appendInfo(null, batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.CREATE_BATCH, "Non-incremental sync batch created", batch);
+
+            updateBatchStatus(batch, SyncBatchStatus.READY, null);
+            auditStatus(null, batch, task, SyncAuditEventType.CREATE_BATCH,
+                    "Non-incremental sync batch is ready", SyncBatchStatus.READY);
+
+            run = createRun(task, version, batch, triggerType, params);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.CREATE_RUN, "Non-incremental sync run created", run);
+
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.RENDER_HOCON, "Start rendering non-incremental HOCON", null);
+            variables = buildVariables(task, version, run, batch, null, triggerType, runMode, null, params);
+            String generatedHocon = hoconRenderService.render(version.getHoconTemplate(), variables);
+            String hoconHash = hoconRenderService.calculateHash(generatedHocon);
+            syncRunService.updateGeneratedHocon(run.getRunId(), generatedHocon);
+            run.setGeneratedHocon(generatedHocon);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.RENDER_HOCON, "Non-incremental HOCON rendered", Map.of("hoconHash", hoconHash));
+
+            String jobName = buildSeatunnelJobName(task, run);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.SUBMIT_JOB, "Start submitting non-incremental SeaTunnel job", Map.of("jobName", jobName));
+            SyncSubmitJobResult submitResult = syncZetaClient.submitJob(task.getClientId(), jobName, generatedHocon);
+            syncRunService.updateSeatunnelJob(run.getRunId(), submitResult.getJobId(), submitResult.getJobName());
+            run.setSeatunnelJobId(submitResult.getJobId());
+            run.setSeatunnelJobName(submitResult.getJobName());
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.SUBMIT_JOB, "Non-incremental SeaTunnel job submitted", submitResult.getRawResponse());
+
+            updateBatchStatus(batch, SyncBatchStatus.SUBMITTED, null);
+            updateRunStatus(run, SyncRunStatus.SUBMITTED, null);
+
+            if (!waitForFinish) {
+                return toRunResult(task, version, batch, run, false);
+            }
+
+            updateBatchStatus(batch, SyncBatchStatus.RUNNING, null);
+            updateRunStatus(run, SyncRunStatus.RUNNING, null);
+
+            SyncJobStatusResult finalStatus = pollUntilFinished(task, batch, run);
+            if (!finalStatus.isSuccess()) {
+                throw new ServiceException("SeaTunnel job failed: " + finalStatus.getStatus()
+                        + (isBlank(finalStatus.getErrorMessage()) ? "" : ", " + finalStatus.getErrorMessage()));
+            }
+
+            updateBatchStatus(batch, SyncBatchStatus.VERIFYING, null);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.VERIFYING,
+                    "Non-incremental SeaTunnel job success, start verification",
+                    finalStatus.getRawResponse());
+            VerifyResult verifyResult = syncVerifyService.verifyRun(task, batch, run, variables);
+            syncBatchService.updateMetrics(
+                    batch.getBatchId(),
+                    verifyResult.getSourceCount(),
+                    verifyResult.getSinkCount(),
+                    verifyResult.getErrorCount()
+            );
+            syncRunService.updateMetrics(
+                    run.getRunId(),
+                    verifyResult.getSourceCount(),
+                    verifyResult.getSinkCount(),
+                    verifyResult.getErrorCount()
+            );
+            batch.setSourceCount(verifyResult.getSourceCount());
+            batch.setSinkCount(verifyResult.getSinkCount());
+            batch.setErrorCount(verifyResult.getErrorCount());
+            run.setSourceCount(verifyResult.getSourceCount());
+            run.setSinkCount(verifyResult.getSinkCount());
+            run.setErrorCount(verifyResult.getErrorCount());
+            if (!verifyResult.isPassed() || verifyResult.isHasBlockingFailure()) {
+                throw new ServiceException("Sync verification failed: " + verifyResult.getErrorMessage());
+            }
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.VERIFYING,
+                    "Non-incremental sync verification passed",
+                    verificationDetail(verifyResult));
+
+            updateBatchStatus(batch, SyncBatchStatus.SUCCESS, null);
+            updateRunStatus(run, SyncRunStatus.SUCCESS, null);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.RUN_SUCCESS,
+                    "Non-incremental sync run success",
+                    Map.of("watermarkAdvanced", false));
+
+            RunResultVO result = toRunResult(task, version, batch, run, false);
+            result.setRunStatus(SyncRunStatus.SUCCESS.getCode());
+            result.setBatchStatus(SyncBatchStatus.SUCCESS.getCode());
+            return result;
+        } catch (Exception e) {
+            String message = e.getMessage() == null ? e.toString() : e.getMessage();
+            log.error("Non-incremental sync run failed, taskCode={}, batchId={}, runId={}",
+                    task.getTaskCode(),
+                    batch == null ? null : batch.getBatchId(),
+                    run == null ? null : run.getRunId(),
+                    e);
+
+            if (batch != null) {
+                updateBatchStatus(batch, SyncBatchStatus.FAILED, message);
+            }
+            if (run != null) {
+                updateRunStatus(run, SyncRunStatus.FAILED, message);
+            }
+            syncAuditService.appendError(
+                    run == null ? null : run.getRunId(),
+                    batch == null ? null : batch.getBatchId(),
+                    task.getId(),
+                    task.getTaskCode(),
+                    SyncAuditEventType.RUN_FAILED,
+                    "Non-incremental sync run failed, watermark is not used",
                     Map.of("errorMessage", message)
             );
             if (e instanceof ServiceException) {
@@ -674,10 +811,12 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
             variables.put("batch_end_time", range.getEndTime());
             variables.put("watermark_key", range.getWatermarkKey());
         }
-        variables.put("lookback_seconds", config.getLookbackSeconds() == null ? 0 : config.getLookbackSeconds());
+        variables.put("lookback_seconds", config == null || config.getLookbackSeconds() == null ? 0 : config.getLookbackSeconds());
         variables.put("biz_date", LocalDate.now().toString());
-        variables.put("watermark_field", isBlank(config.getWatermarkField()) ? "" : config.getWatermarkField());
-        putFileVariables(variables, config, batchFiles);
+        variables.put("watermark_field", config == null || isBlank(config.getWatermarkField()) ? "" : config.getWatermarkField());
+        if (config != null) {
+            putFileVariables(variables, config, batchFiles);
+        }
         return variables;
     }
 
@@ -720,6 +859,9 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
     }
 
     private boolean isFileTask(SyncTaskEntity task, SyncIncrementalConfigEntity config) {
+        if (config == null) {
+            return task.getSourceType() == SyncSourceType.LOCAL_FILE || task.getSourceType() == SyncSourceType.FTP_FILE;
+        }
         SyncSourceType sourceType = config.getSourceType() == null ? task.getSourceType() : config.getSourceType();
         return sourceType == SyncSourceType.LOCAL_FILE || sourceType == SyncSourceType.FTP_FILE;
     }
@@ -836,6 +978,17 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
             throw new ServiceException("Sync incremental config not found, taskId=" + taskId);
         }
         return config;
+    }
+
+    private SyncIncrementalConfigEntity loadConfigIfIncremental(SyncTaskEntity task) {
+        if (!isIncrementalEnabled(task)) {
+            return null;
+        }
+        return loadConfig(task.getId());
+    }
+
+    private boolean isIncrementalEnabled(SyncTaskEntity task) {
+        return task.getIncrementalEnabled() == null || Boolean.TRUE.equals(task.getIncrementalEnabled());
     }
 
     private SyncTriggerType parseTriggerType(String value, SyncTriggerType defaultValue) {

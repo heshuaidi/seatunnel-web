@@ -27,6 +27,7 @@ import org.apache.seatunnel.web.dao.entity.SyncIncrementalConfigEntity;
 import org.apache.seatunnel.web.dao.entity.SyncTaskEntity;
 import org.apache.seatunnel.web.dao.entity.SyncTaskVersionEntity;
 import org.apache.seatunnel.web.dao.entity.SyncWatermarkEntity;
+import org.apache.seatunnel.web.spi.bean.dto.CreateFabLoaderPublishTaskRequest;
 import org.apache.seatunnel.web.spi.bean.dto.CreateFabMesSpcJdbcTaskRequest;
 import org.apache.seatunnel.web.spi.bean.vo.CreateTaskFromTemplateResultVO;
 import org.apache.seatunnel.web.spi.bean.vo.SyncBuiltInTemplateVO;
@@ -48,8 +49,13 @@ public class SyncBuiltInTemplateServiceImpl
         extends SyncServiceSupport
         implements SyncBuiltInTemplateService {
 
-    private static final String TEMPLATE_RESOURCE =
+    private static final String FAB_MES_SPC_TEMPLATE_RESOURCE =
             "sync/templates/fab_mes_spc_jdbc_translator.conf";
+
+    private static final String FAB_LOADER_PUBLISH_TEMPLATE_RESOURCE =
+            "sync/templates/fab_loader_publish_xchg_to_stg.conf";
+
+    private static final String BATCH_ID_MODE_MANUAL_PARAM = "MANUAL_PARAM";
 
     @Resource
     private SyncTaskService syncTaskService;
@@ -71,15 +77,18 @@ public class SyncBuiltInTemplateServiceImpl
 
     @Override
     public List<SyncBuiltInTemplateVO> listTemplates() {
-        return List.of(fabMesSpcTemplate(false));
+        return List.of(fabMesSpcTemplate(false), fabLoaderPublishTemplate(false));
     }
 
     @Override
     public SyncBuiltInTemplateVO getTemplate(String templateCode) {
-        if (!FAB_MES_SPC_JDBC_TRANSLATOR.equalsIgnoreCase(templateCode)) {
-            throw new ServiceException("Unknown sync built-in template: " + templateCode);
+        if (FAB_MES_SPC_JDBC_TRANSLATOR.equalsIgnoreCase(templateCode)) {
+            return fabMesSpcTemplate(true);
         }
-        return fabMesSpcTemplate(true);
+        if (FAB_LOADER_PUBLISH_XCHG_TO_STG.equalsIgnoreCase(templateCode)) {
+            return fabLoaderPublishTemplate(true);
+        }
+        throw new ServiceException("Unknown sync built-in template: " + templateCode);
     }
 
     @Override
@@ -165,7 +174,7 @@ public class SyncBuiltInTemplateServiceImpl
                 .versionNo(1)
                 .hoconTemplate(hoconTemplate)
                 .hoconHash(hoconRenderService.calculateHash(hoconTemplate))
-                .paramSchemaJson(paramSchemaJson())
+                .paramSchemaJson(fabMesSpcParamSchemaJson())
                 .publishStatus(SyncPublishStatus.PUBLISHED)
                 .build();
         Long versionId = syncTaskVersionService.create(version);
@@ -214,6 +223,82 @@ public class SyncBuiltInTemplateServiceImpl
         return result;
     }
 
+    @Override
+    @Transactional
+    public CreateTaskFromTemplateResultVO createTaskFromFabLoaderPublishTemplate(
+            CreateFabLoaderPublishTaskRequest request
+    ) {
+        if (request == null) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "request");
+        }
+        if (isBlank(request.getTaskCode())) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "taskCode");
+        }
+        if (isBlank(request.getTaskName())) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "taskName");
+        }
+        if (request.getClientId() == null) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "clientId");
+        }
+        String batchIdMode = valueOrDefault(request.getBatchIdMode(), BATCH_ID_MODE_MANUAL_PARAM);
+        if (!BATCH_ID_MODE_MANUAL_PARAM.equalsIgnoreCase(batchIdMode)) {
+            throw new ServiceException("Fab loader publish template supports MANUAL_PARAM batchIdMode only");
+        }
+        if (syncTaskService.getByTaskCode(request.getTaskCode()) != null) {
+            throw new ServiceException("Sync task already exists, taskCode=" + request.getTaskCode());
+        }
+
+        SyncTaskEntity task = SyncTaskEntity.builder()
+                .taskCode(request.getTaskCode())
+                .taskName(request.getTaskName())
+                .taskType(SyncTaskType.BATCH)
+                .sourceType(SyncSourceType.SQL)
+                .sinkType(SyncSinkType.STARROCKS)
+                .engineType(SyncEngineType.ZETA)
+                .clientId(request.getClientId())
+                .incrementalEnabled(false)
+                .incrementalStrategy(null)
+                .status(SyncTaskStatus.PUBLISHED)
+                .description(request.getDescription())
+                .build();
+        Long taskId = syncTaskService.create(task);
+        task.setId(taskId);
+
+        String hoconTemplate = instantiateLoaderPublishTemplate(loadLoaderPublishTemplate(), request);
+        SyncTaskVersionEntity version = SyncTaskVersionEntity.builder()
+                .taskId(taskId)
+                .versionNo(1)
+                .hoconTemplate(hoconTemplate)
+                .hoconHash(hoconRenderService.calculateHash(hoconTemplate))
+                .paramSchemaJson(loaderPublishParamSchemaJson(request))
+                .publishStatus(SyncPublishStatus.PUBLISHED)
+                .build();
+        Long versionId = syncTaskVersionService.create(version);
+        version.setId(versionId);
+
+        task.setCurrentVersionId(versionId);
+        syncTaskService.update(task);
+
+        List<String> warnings = new ArrayList<>();
+        int createdCheckCount = createLoaderPublishChecksIfNeeded(taskId, request, warnings);
+
+        CreateTaskFromTemplateResultVO result = new CreateTaskFromTemplateResultVO();
+        result.setTaskId(taskId);
+        result.setTaskCode(task.getTaskCode());
+        result.setVersionId(versionId);
+        result.setIncrementalConfigId(null);
+        result.setWatermarkId(null);
+        result.setCreatedCheckCount(createdCheckCount);
+        result.setWarnings(warnings);
+        result.setNextActions(List.of(
+                "1. Create StarRocks stg/dwd/ads tables from docs/sql/fab_loader_publish_starrocks.sql.",
+                "2. Call preview-hocon with xchg_batch_id and runtime credentials if placeholders remain.",
+                "3. Call run API with params.xchg_batch_id to publish one translator batch to eda_stg.",
+                "4. Execute docs/sql/fab_loader_publish_dwd_ads.sql separately when dwd/ads publish is required."
+        ));
+        return result;
+    }
+
     private SyncBuiltInTemplateVO fabMesSpcTemplate(boolean includeTemplate) {
         SyncBuiltInTemplateVO vo = new SyncBuiltInTemplateVO();
         vo.setTemplateCode(FAB_MES_SPC_JDBC_TRANSLATOR);
@@ -222,7 +307,7 @@ public class SyncBuiltInTemplateServiceImpl
         vo.setSourceType(SyncSourceType.JDBC.getCode());
         vo.setSinkType(SyncSinkType.STARROCKS.getCode());
         vo.setIncrementalStrategy(SyncIncrementalStrategy.UPDATE_TIME_RANGE.getCode());
-        vo.setRequiredVariables(requiredVariables());
+        vo.setRequiredVariables(fabMesSpcRequiredVariables());
         vo.setDocs(List.of(
                 "docs/fab-mes-spc-translator-template.md",
                 "docs/templates/fab_mes_spc_jdbc_translator.conf",
@@ -230,6 +315,27 @@ public class SyncBuiltInTemplateServiceImpl
         ));
         if (includeTemplate) {
             vo.setHoconTemplate(loadFabMesSpcTemplate());
+        }
+        return vo;
+    }
+
+    private SyncBuiltInTemplateVO fabLoaderPublishTemplate(boolean includeTemplate) {
+        SyncBuiltInTemplateVO vo = new SyncBuiltInTemplateVO();
+        vo.setTemplateCode(FAB_LOADER_PUBLISH_XCHG_TO_STG);
+        vo.setTemplateName("Fab Loader Publish XCHG to STG");
+        vo.setDescription("Fab loader publish template from StarRocks xchg measure tables to eda_stg tables.");
+        vo.setSourceType(SyncSourceType.SQL.getCode());
+        vo.setSinkType(SyncSinkType.STARROCKS.getCode());
+        vo.setIncrementalStrategy(null);
+        vo.setRequiredVariables(loaderPublishRequiredVariables());
+        vo.setDocs(List.of(
+                "docs/fab-loader-publish-template.md",
+                "docs/templates/fab_loader_publish_xchg_to_stg.conf",
+                "docs/sql/fab_loader_publish_starrocks.sql",
+                "docs/sql/fab_loader_publish_dwd_ads.sql"
+        ));
+        if (includeTemplate) {
+            vo.setHoconTemplate(loadLoaderPublishTemplate());
         }
         return vo;
     }
@@ -319,6 +425,127 @@ public class SyncBuiltInTemplateServiceImpl
         return checks.size();
     }
 
+    private int createLoaderPublishChecksIfNeeded(
+            Long taskId,
+            CreateFabLoaderPublishTaskRequest request,
+            List<String> warnings
+    ) {
+        boolean enableDefaultChecks = request.getEnableDefaultChecks() == null
+                || Boolean.TRUE.equals(request.getEnableDefaultChecks());
+        if (!enableDefaultChecks) {
+            return 0;
+        }
+        if (request.getStarrocksDatasourceId() == null) {
+            warnings.add("Default checks were not created because starrocksDatasourceId is empty.");
+            return 0;
+        }
+
+        String xchgHeaderTable = valueOrDefault(request.getXchgHeaderTable(), "xchg_meas_header");
+        String xchgSiteTable = valueOrDefault(request.getXchgSiteTable(), "xchg_meas_site");
+        String xchgErrorTable = valueOrDefault(request.getXchgErrorTable(), "xchg_meas_error");
+        String stgHeaderTable = valueOrDefault(request.getStgHeaderTable(), "eda_stg_measure_header");
+        String stgSiteTable = valueOrDefault(request.getStgSiteTable(), "eda_stg_measure_site");
+        String stgErrorTable = valueOrDefault(request.getStgErrorTable(), "eda_stg_measure_error");
+
+        List<SyncCheckConfigEntity> checks = List.of(
+                SyncCheckConfigEntity.builder()
+                        .taskId(taskId)
+                        .checkCode("xchg_header_count")
+                        .checkName("XCHG header count")
+                        .checkType(SyncCheckType.SOURCE_COUNT)
+                        .datasourceType(SyncCheckDatasourceType.SOURCE)
+                        .datasourceId(request.getStarrocksDatasourceId())
+                        .sqlText("SELECT COUNT(*)\nFROM " + xchgHeaderTable + "\nWHERE batch_id = '${xchg_batch_id}'")
+                        .expectedOperator(SyncCheckExpectedOperator.GE)
+                        .expectedValue("0")
+                        .failOnMismatch(true)
+                        .enabled(true)
+                        .sortOrder(10)
+                        .description("Counts xchg header rows for the translator batch.")
+                        .build(),
+                SyncCheckConfigEntity.builder()
+                        .taskId(taskId)
+                        .checkCode("stg_header_count")
+                        .checkName("STG header count")
+                        .checkType(SyncCheckType.SINK_COUNT)
+                        .datasourceType(SyncCheckDatasourceType.SINK)
+                        .datasourceId(request.getStarrocksDatasourceId())
+                        .sqlText("SELECT COUNT(*)\nFROM " + stgHeaderTable + "\nWHERE batch_id = '${xchg_batch_id}'")
+                        .expectedOperator(SyncCheckExpectedOperator.EQ)
+                        .compareToCheckCode("xchg_header_count")
+                        .failOnMismatch(true)
+                        .enabled(true)
+                        .sortOrder(20)
+                        .description("Compares eda_stg header rows with xchg_header_count.")
+                        .build(),
+                SyncCheckConfigEntity.builder()
+                        .taskId(taskId)
+                        .checkCode("xchg_site_count")
+                        .checkName("XCHG site count")
+                        .checkType(SyncCheckType.CUSTOM_COUNT)
+                        .datasourceType(SyncCheckDatasourceType.SOURCE)
+                        .datasourceId(request.getStarrocksDatasourceId())
+                        .sqlText("SELECT COUNT(*)\nFROM " + xchgSiteTable + "\nWHERE batch_id = '${xchg_batch_id}'")
+                        .expectedOperator(SyncCheckExpectedOperator.GE)
+                        .expectedValue("0")
+                        .failOnMismatch(true)
+                        .enabled(true)
+                        .sortOrder(30)
+                        .description("Counts xchg site rows for the translator batch.")
+                        .build(),
+                SyncCheckConfigEntity.builder()
+                        .taskId(taskId)
+                        .checkCode("stg_site_count")
+                        .checkName("STG site count")
+                        .checkType(SyncCheckType.CUSTOM_COUNT)
+                        .datasourceType(SyncCheckDatasourceType.SINK)
+                        .datasourceId(request.getStarrocksDatasourceId())
+                        .sqlText("SELECT COUNT(*)\nFROM " + stgSiteTable + "\nWHERE batch_id = '${xchg_batch_id}'")
+                        .expectedOperator(SyncCheckExpectedOperator.EQ)
+                        .compareToCheckCode("xchg_site_count")
+                        .failOnMismatch(true)
+                        .enabled(true)
+                        .sortOrder(40)
+                        .description("Compares eda_stg site rows with xchg_site_count.")
+                        .build(),
+                SyncCheckConfigEntity.builder()
+                        .taskId(taskId)
+                        .checkCode("xchg_error_count")
+                        .checkName("XCHG error count")
+                        .checkType(SyncCheckType.CUSTOM_COUNT)
+                        .datasourceType(SyncCheckDatasourceType.SOURCE)
+                        .datasourceId(request.getStarrocksDatasourceId())
+                        .sqlText("SELECT COUNT(*)\nFROM " + xchgErrorTable + "\nWHERE batch_id = '${xchg_batch_id}'")
+                        .expectedOperator(SyncCheckExpectedOperator.GE)
+                        .expectedValue("0")
+                        .failOnMismatch(true)
+                        .enabled(true)
+                        .sortOrder(50)
+                        .description("Counts xchg error rows; loader publish should carry them forward.")
+                        .build(),
+                SyncCheckConfigEntity.builder()
+                        .taskId(taskId)
+                        .checkCode("stg_error_count")
+                        .checkName("STG error count")
+                        .checkType(SyncCheckType.CUSTOM_COUNT)
+                        .datasourceType(SyncCheckDatasourceType.SINK)
+                        .datasourceId(request.getStarrocksDatasourceId())
+                        .sqlText("SELECT COUNT(*)\nFROM " + stgErrorTable + "\nWHERE batch_id = '${xchg_batch_id}'")
+                        .expectedOperator(SyncCheckExpectedOperator.EQ)
+                        .compareToCheckCode("xchg_error_count")
+                        .failOnMismatch(true)
+                        .enabled(true)
+                        .sortOrder(60)
+                        .description("Compares eda_stg error rows with xchg_error_count.")
+                        .build()
+        );
+
+        for (SyncCheckConfigEntity check : checks) {
+            syncCheckConfigService.create(check);
+        }
+        return checks.size();
+    }
+
     private String instantiateTemplate(String template, CreateFabMesSpcJdbcTaskRequest request) {
         Map<String, String> replacements = new LinkedHashMap<>();
         replacements.put("source_system", valueOrPlaceholder(request.getSourceSystem(), "source_system"));
@@ -341,11 +568,35 @@ public class SyncBuiltInTemplateServiceImpl
         return renderedTemplate;
     }
 
-    private String paramSchemaJson() {
+    private String instantiateLoaderPublishTemplate(String template, CreateFabLoaderPublishTaskRequest request) {
+        Map<String, String> replacements = new LinkedHashMap<>();
+        replacements.put("source_system", valueOrPlaceholder(request.getSourceSystem(), "source_system"));
+        replacements.put("starrocks_jdbc_url", valueOrPlaceholder(request.getStarrocksJdbcUrl(), "starrocks_jdbc_url"));
+        replacements.put("starrocks_jdbc_driver", valueOrDefault(request.getStarrocksJdbcDriver(), "com.mysql.cj.jdbc.Driver"));
+        replacements.put("starrocks_node_urls", valueOrPlaceholder(request.getStarrocksNodeUrls(), "starrocks_node_urls"));
+        replacements.put("starrocks_base_url", valueOrPlaceholder(request.getStarrocksBaseUrl(), "starrocks_base_url"));
+        replacements.put("starrocks_username", valueOrPlaceholder(request.getStarrocksUsername(), "starrocks_username"));
+        replacements.put("starrocks_password", valueOrPlaceholder(request.getStarrocksPassword(), "starrocks_password"));
+        replacements.put("starrocks_database", valueOrPlaceholder(request.getStarrocksDatabase(), "starrocks_database"));
+        replacements.put("xchg_header_table", valueOrDefault(request.getXchgHeaderTable(), "xchg_meas_header"));
+        replacements.put("xchg_site_table", valueOrDefault(request.getXchgSiteTable(), "xchg_meas_site"));
+        replacements.put("xchg_error_table", valueOrDefault(request.getXchgErrorTable(), "xchg_meas_error"));
+        replacements.put("stg_header_table", valueOrDefault(request.getStgHeaderTable(), "eda_stg_measure_header"));
+        replacements.put("stg_site_table", valueOrDefault(request.getStgSiteTable(), "eda_stg_measure_site"));
+        replacements.put("stg_error_table", valueOrDefault(request.getStgErrorTable(), "eda_stg_measure_error"));
+
+        String renderedTemplate = template;
+        for (Map.Entry<String, String> entry : replacements.entrySet()) {
+            renderedTemplate = renderedTemplate.replace("${" + entry.getKey() + "}", entry.getValue());
+        }
+        return renderedTemplate;
+    }
+
+    private String fabMesSpcParamSchemaJson() {
         Map<String, Object> schema = new LinkedHashMap<>();
         schema.put("templateCode", FAB_MES_SPC_JDBC_TRANSLATOR);
         schema.put("description", "Runtime and credential variables required by the Fab MES/SPC JDBC translator template.");
-        schema.put("requiredVariables", requiredVariables());
+        schema.put("requiredVariables", fabMesSpcRequiredVariables());
         schema.put("runtimeVariables", List.of(
                 "batch_id",
                 "run_id",
@@ -364,7 +615,32 @@ public class SyncBuiltInTemplateServiceImpl
         return JSONUtils.toJsonString(schema);
     }
 
-    private List<String> requiredVariables() {
+    private String loaderPublishParamSchemaJson(CreateFabLoaderPublishTaskRequest request) {
+        Map<String, Object> schema = new LinkedHashMap<>();
+        schema.put("templateCode", FAB_LOADER_PUBLISH_XCHG_TO_STG);
+        schema.put("description", "Runtime variables required by the Fab loader publish xchg-to-stg template.");
+        schema.put("sourceTaskCode", request.getSourceTaskCode());
+        schema.put("batchIdMode", valueOrDefault(request.getBatchIdMode(), BATCH_ID_MODE_MANUAL_PARAM));
+        schema.put("requiredVariables", loaderPublishRequiredVariables());
+        schema.put("runtimeVariables", List.of(
+                "batch_id",
+                "run_id",
+                "task_code",
+                "xchg_batch_id"
+        ));
+        schema.put("sensitiveVariables", List.of(
+                "starrocks_username",
+                "starrocks_password"
+        ));
+        schema.put("notes", List.of(
+                "batch_id is the seatunnel-web sync batch id.",
+                "xchg_batch_id is the business translator batch id used to filter xchg/stg rows.",
+                "Only MANUAL_PARAM batchIdMode is implemented in this version."
+        ));
+        return JSONUtils.toJsonString(schema);
+    }
+
+    private List<String> fabMesSpcRequiredVariables() {
         return List.of(
                 "batch_id",
                 "run_id",
@@ -388,12 +664,43 @@ public class SyncBuiltInTemplateServiceImpl
         );
     }
 
+    private List<String> loaderPublishRequiredVariables() {
+        return List.of(
+                "batch_id",
+                "run_id",
+                "task_code",
+                "xchg_batch_id",
+                "source_system",
+                "starrocks_jdbc_url",
+                "starrocks_jdbc_driver",
+                "starrocks_username",
+                "starrocks_password",
+                "starrocks_node_urls",
+                "starrocks_base_url",
+                "starrocks_database",
+                "xchg_header_table",
+                "xchg_site_table",
+                "xchg_error_table",
+                "stg_header_table",
+                "stg_site_table",
+                "stg_error_table"
+        );
+    }
+
     private String loadFabMesSpcTemplate() {
-        ClassPathResource resource = new ClassPathResource(TEMPLATE_RESOURCE);
+        return loadTemplate(FAB_MES_SPC_TEMPLATE_RESOURCE);
+    }
+
+    private String loadLoaderPublishTemplate() {
+        return loadTemplate(FAB_LOADER_PUBLISH_TEMPLATE_RESOURCE);
+    }
+
+    private String loadTemplate(String resourcePath) {
+        ClassPathResource resource = new ClassPathResource(resourcePath);
         try (InputStream inputStream = resource.getInputStream()) {
             return new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
         } catch (IOException e) {
-            throw new ServiceException("Load built-in template failed: " + TEMPLATE_RESOURCE, e);
+            throw new ServiceException("Load built-in template failed: " + resourcePath, e);
         }
     }
 

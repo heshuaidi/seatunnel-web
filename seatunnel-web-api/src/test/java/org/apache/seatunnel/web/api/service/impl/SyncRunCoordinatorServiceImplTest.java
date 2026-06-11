@@ -45,6 +45,9 @@ class SyncRunCoordinatorServiceImplTest {
     private SyncRunCoordinatorServiceImpl service;
     private SyncWatermarkService watermarkService;
     private SyncVerifyService verifyService;
+    private SyncIncrementalConfigDao configDao;
+    private SyncBatchService batchService;
+    private SyncZetaClient zetaClient;
 
     @BeforeEach
     void setUp() {
@@ -54,15 +57,17 @@ class SyncRunCoordinatorServiceImplTest {
 
         SyncTaskDao taskDao = Mockito.mock(SyncTaskDao.class);
         SyncTaskVersionDao versionDao = Mockito.mock(SyncTaskVersionDao.class);
-        SyncIncrementalConfigDao configDao = Mockito.mock(SyncIncrementalConfigDao.class);
-        SyncBatchService batchService = Mockito.mock(SyncBatchService.class);
+        configDao = Mockito.mock(SyncIncrementalConfigDao.class);
+        batchService = Mockito.mock(SyncBatchService.class);
         SyncRunService runService = Mockito.mock(SyncRunService.class);
         SyncAuditService auditService = Mockito.mock(SyncAuditService.class);
-        SyncZetaClient zetaClient = Mockito.mock(SyncZetaClient.class);
+        zetaClient = Mockito.mock(SyncZetaClient.class);
         HoconRenderService hoconRenderService = new HoconRenderServiceImpl();
 
         Mockito.when(taskDao.queryByTaskCode("task_1")).thenReturn(task());
+        Mockito.when(taskDao.queryByTaskCode("loader_task")).thenReturn(nonIncrementalTask());
         Mockito.when(versionDao.queryById(2L)).thenReturn(version());
+        Mockito.when(versionDao.queryById(3L)).thenReturn(nonIncrementalVersion());
         Mockito.when(configDao.queryByTaskId(1L)).thenReturn(config());
         Mockito.when(watermarkService.calculateNextRange(Mockito.eq(1L), Mockito.anyMap())).thenReturn(range());
         Mockito.when(watermarkService.getByTaskIdAndWatermarkKey(1L, "default")).thenReturn(null);
@@ -71,6 +76,13 @@ class SyncRunCoordinatorServiceImplTest {
                 Mockito.any(),
                 Mockito.eq(SyncTriggerType.MANUAL),
                 Mockito.eq(SyncRunMode.NORMAL)
+        )).thenReturn(batch());
+        Mockito.when(batchService.createFileBatchForRun(
+                Mockito.any(),
+                Mockito.eq(SyncTriggerType.MANUAL),
+                Mockito.eq(SyncRunMode.NORMAL),
+                Mockito.isNull(),
+                Mockito.isNull()
         )).thenReturn(batch());
         Mockito.when(batchService.updateStatus(Mockito.anyString(), Mockito.any(), Mockito.any())).thenReturn(true);
         Mockito.when(batchService.updateMetrics(Mockito.anyString(), Mockito.any(), Mockito.any(), Mockito.any()))
@@ -148,6 +160,54 @@ class SyncRunCoordinatorServiceImplTest {
         );
     }
 
+    @Test
+    void nonIncrementalTaskShouldSkipWatermarkAndRenderRunParams() {
+        VerifyResult verifyResult = new VerifyResult();
+        verifyResult.setPassed(true);
+        verifyResult.setSourceCount(10L);
+        verifyResult.setSinkCount(10L);
+        Mockito.when(verifyService.verifyRun(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.anyMap()))
+                .thenReturn(verifyResult);
+
+        RunTaskRequest request = request();
+        request.setParams(Map.of("xchg_batch_id", "translator_batch_1"));
+        RunResultVO result = service.runTask("loader_task", request);
+
+        Assertions.assertFalse(result.getWatermarkAdvanced());
+        Assertions.assertEquals(SyncRunStatus.SUCCESS.getCode(), result.getRunStatus());
+        Mockito.verify(configDao, Mockito.never()).queryByTaskId(3L);
+        Mockito.verify(watermarkService, Mockito.never()).calculateNextRange(Mockito.eq(3L), Mockito.anyMap());
+        Mockito.verify(watermarkService, Mockito.never())
+                .advanceWatermark(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+
+        org.mockito.ArgumentCaptor<String> hoconCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
+        Mockito.verify(zetaClient).submitJob(Mockito.eq(7L), Mockito.anyString(), hoconCaptor.capture());
+        Assertions.assertTrue(hoconCaptor.getValue().contains("translator_batch_1"));
+        Assertions.assertTrue(hoconCaptor.getValue().contains("system_batch=batch_1"));
+    }
+
+    @Test
+    void nonIncrementalTaskVerificationFailedShouldNotAdvanceWatermark() {
+        VerifyResult verifyResult = new VerifyResult();
+        verifyResult.setPassed(false);
+        verifyResult.setHasBlockingFailure(true);
+        verifyResult.setErrorMessage("stg_header_count mismatch");
+        Mockito.when(verifyService.verifyRun(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.anyMap()))
+                .thenReturn(verifyResult);
+
+        RunTaskRequest request = request();
+        request.setParams(Map.of("xchg_batch_id", "translator_batch_1"));
+
+        ServiceException exception = Assertions.assertThrows(
+                ServiceException.class,
+                () -> service.runTask("loader_task", request)
+        );
+
+        Assertions.assertTrue(exception.getMessage().contains("Sync verification failed"));
+        Mockito.verify(watermarkService, Mockito.never())
+                .advanceWatermark(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+    }
+
     private RunTaskRequest request() {
         RunTaskRequest request = new RunTaskRequest();
         request.setWaitForFinish(true);
@@ -168,12 +228,36 @@ class SyncRunCoordinatorServiceImplTest {
                 .build();
     }
 
+    private SyncTaskEntity nonIncrementalTask() {
+        return SyncTaskEntity.builder()
+                .id(3L)
+                .taskCode("loader_task")
+                .taskName("Loader Task")
+                .taskType(SyncTaskType.BATCH)
+                .sourceType(SyncSourceType.SQL)
+                .sinkType(SyncSinkType.STARROCKS)
+                .clientId(7L)
+                .incrementalEnabled(false)
+                .status(SyncTaskStatus.PUBLISHED)
+                .currentVersionId(3L)
+                .build();
+    }
+
     private SyncTaskVersionEntity version() {
         return SyncTaskVersionEntity.builder()
                 .id(2L)
                 .taskId(1L)
                 .versionNo(1)
                 .hoconTemplate("job { name = \"${run_id}\" batch = \"${batch_id}\" }")
+                .build();
+    }
+
+    private SyncTaskVersionEntity nonIncrementalVersion() {
+        return SyncTaskVersionEntity.builder()
+                .id(3L)
+                .taskId(3L)
+                .versionNo(1)
+                .hoconTemplate("job { system_batch=${batch_id} run=${run_id} xchg_batch=${xchg_batch_id} }")
                 .build();
     }
 

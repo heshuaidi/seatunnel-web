@@ -2,6 +2,7 @@ package org.apache.seatunnel.web.api.controller;
 
 import jakarta.annotation.Resource;
 import org.apache.seatunnel.web.api.service.SyncBuiltInTemplateService;
+import org.apache.seatunnel.web.spi.bean.dto.CreateFabLoaderPublishTaskRequest;
 import org.apache.seatunnel.web.spi.bean.dto.CreateFabMesSpcJdbcTaskRequest;
 import org.apache.seatunnel.web.spi.bean.entity.Result;
 import org.apache.seatunnel.web.spi.bean.vo.CreateTaskFromTemplateResultVO;
@@ -37,5 +38,12 @@ public class SyncTemplateController {
             @RequestBody CreateFabMesSpcJdbcTaskRequest request
     ) {
         return Result.buildSuc(syncBuiltInTemplateService.createTaskFromFabMesSpcJdbcTemplate(request));
+    }
+
+    @PostMapping("/fab-loader-publish/create-task")
+    public Result<CreateTaskFromTemplateResultVO> createFabLoaderPublishTask(
+            @RequestBody CreateFabLoaderPublishTaskRequest request
+    ) {
+        return Result.buildSuc(syncBuiltInTemplateService.createTaskFromFabLoaderPublishTemplate(request));
     }
 }
