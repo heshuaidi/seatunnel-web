@@ -288,6 +288,50 @@ The current watermark must remain unchanged because watermark advancement happen
 
 This SOP is for JDBC / SQL / Oracle / StarRocks incremental batch source testing. It intentionally does not cover FtpFile, LocalFile, WAT, or CP file translator flows.
 
+## Frontend Test Console
+
+After starting `seatunnel-web-ui`, open the left menu:
+
+```text
+增量同步 -> 增量同步测试台
+```
+
+Route:
+
+```text
+/sync-control/test-console
+```
+
+The page is a single test console for JDBC / SQL / Oracle / StarRocks incremental Batch tasks. It contains these tabs:
+
+- `模板创建`
+- `任务诊断`
+- `HOCON / Range`
+- `运行任务`
+- `Runs`
+- `Batches`
+- `Watermark`
+- `Checks`
+- `Audits`
+
+Recommended frontend test flow:
+
+1. Enter or create a `taskCode` in the top task bar.
+2. In `模板创建`, click `填充 UPDATE_TIME_RANGE 示例`, adjust `clientId` and datasource ids, then click `创建任务`.
+3. For ID range testing, click `填充 ID_RANGE 示例`, adjust values, then click `创建任务`.
+4. In `任务诊断`, pass credential params and click `诊断`.
+5. In `HOCON / Range`, run `预览 Range` and `诊断 HOCON`.
+6. In `HOCON / Range`, use `预览 HOCON` if you need the older full HOCON preview.
+7. In `运行任务`, run normal sync or backfill. For ID range, pass `batchEndValue` in params JSON.
+8. In `Runs`, query run history, open run detail, jump to run audits/checks, or fill rerun.
+9. In `Batches`, query batch ranges and batch audits.
+10. In `Watermark`, query current watermark and manually reset it when lab testing needs a controlled baseline.
+11. In `Checks`, list or edit check config, diagnose check SQL, and query check results by `runId`.
+12. In `Audits`, query run audits or batch audits and expand `detailJson`.
+13. For failure recovery, select a failed run from `Runs`, click `rerun`, then execute `RERUN_SAME_RANGE` in `运行任务`.
+
+The frontend validates every params JSON input before sending requests. Passwords can be entered in params JSON, but the page does not intentionally log or echo request params. Diagnosis and audit responses rely on backend masking.
+
 ### 1. Create Lab Tables
 
 Run:

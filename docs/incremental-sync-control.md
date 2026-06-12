@@ -1113,6 +1113,38 @@ POST /api/v1/sync/runs/{runId}/rerun
 docs/generic-jdbc-starrocks-incremental-test.md
 ```
 
+### 前端测试入口
+
+前端第一版提供单页面“增量同步测试台”，用于手动测试 JDBC / SQL / Oracle / StarRocks 增量 Batch source 管理闭环。
+
+菜单：
+
+```text
+增量同步 -> 增量同步测试台
+```
+
+路由：
+
+```text
+/sync-control/test-console
+```
+
+页面顶部有全局 `taskCode` 输入框，后续所有 tab 默认使用该任务。
+
+Tab 能力：
+
+- `模板创建`：查询模板；创建 `GENERIC_JDBC_SQL_TO_STARROCKS_INCREMENTAL` 任务；提供 UPDATE_TIME_RANGE 和 ID_RANGE lab 示例填充。
+- `任务诊断`：调用 `POST /api/v1/sync/tasks/{taskCode}/diagnose`，展示 task/version/config/watermark/range/HOCON/check/client/diagnostics。
+- `HOCON / Range`：预览 range；诊断 HOCON；调用旧 `preview-hocon`；支持复制 rendered HOCON。
+- `运行任务`：普通 run、backfill、`RERUN_SAME_RANGE` rerun。
+- `Runs`：按 status/time/page 查询 runs；查看详情；跳转 run audits/checks；填充 rerun。
+- `Batches`：按 status/time/page 查询 batches；查看 batch 详情和 batch audits。
+- `Watermark`：查询 watermark；手动修正 watermark，`reason` 必填，并提示仅用于 lab 或人工修复。
+- `Checks`：查询/新增/编辑 check config；诊断 check SQL；按 runId 查询 check results。
+- `Audits`：查询 run audits 或 batch audits，支持展开 `detailJson`。
+
+前端请求使用项目现有 `HttpUtils` 封装，不新增 UI 框架。params JSON 输入会先做 `JSON.parse` 校验；错误时提示“JSON 格式错误”。
+
 常见定位路径：
 
 | 问题 | 首选接口 | 关注字段 |
