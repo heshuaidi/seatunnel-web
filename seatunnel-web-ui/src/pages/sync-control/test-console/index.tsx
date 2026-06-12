@@ -1351,6 +1351,7 @@ const SyncTestConsole: React.FC = () => {
           <Table
             rowKey={(row) => String(row.id || row.watermarkKey)}
             size="small"
+            scroll={{ x: 1200 }}
             dataSource={watermarks}
             loading={loading.watermark}
             columns={[
@@ -1497,6 +1498,7 @@ const SyncTestConsole: React.FC = () => {
           style={{ marginTop: 12 }}
           rowKey={(row) => row.checkCode || Math.random().toString()}
           size="small"
+          scroll={{ x: 1200 }}
           columns={checkDiagnosticColumns}
           dataSource={checkDiagnostic?.checks || []}
           expandable={{
@@ -1575,6 +1577,7 @@ const SyncTestConsole: React.FC = () => {
       <Table
         rowKey={(row) => String(row.id || `${row.runId}-${row.eventType}-${row.createTime}`)}
         size="small"
+        scroll={{ x: 1200 }}
         dataSource={audits}
         loading={loading.audits}
         pagination={{
@@ -1598,57 +1601,59 @@ const SyncTestConsole: React.FC = () => {
 
   return (
     <div className="sync-test-console">
-      <div className="console-hero">
-        <h1>增量同步测试台</h1>
-        <p>
-          用于测试 JDBC / SQL / Oracle / StarRocks 增量 Batch 任务的 batch、watermark、HOCON、Zeta
-          提交、check、audit、rerun 能力。
-        </p>
+      <div className="sync-test-console__scroll">
+        <div className="console-hero">
+          <h1>增量同步测试台</h1>
+          <p>
+            用于测试 JDBC / SQL / Oracle / StarRocks 增量 Batch 任务的 batch、watermark、HOCON、Zeta
+            提交、check、audit、rerun 能力。
+          </p>
+        </div>
+
+        <Card className="task-bar">
+          <Row gutter={12} align="middle">
+            <Col flex="auto">
+              <Input
+                size="large"
+                prefix={<DatabaseOutlined />}
+                placeholder="输入 taskCode，后续所有 Tab 默认使用该任务"
+                value={taskCode}
+                onChange={(event) => setTaskCode(event.target.value)}
+              />
+            </Col>
+            <Col>
+              <Button size="large" icon={<ReloadOutlined />} onClick={refreshCurrentTask} loading={loading.refreshTask}>
+                刷新当前任务
+              </Button>
+            </Col>
+            <Col>
+              <Space>
+                <Text type="secondary">当前状态</Text>
+                {statusTag(diagnostic?.task?.status)}
+                {statusTag(diagnostic?.diagnostics?.level)}
+              </Space>
+            </Col>
+          </Row>
+        </Card>
+
+        <Card className="main-card">
+          <Tabs
+            activeKey={activeKey}
+            onChange={setActiveKey}
+            items={[
+              { key: 'template', label: '模板创建', children: renderCreateTab() },
+              { key: 'diagnose', label: '任务诊断', children: renderDiagnosticTab() },
+              { key: 'hocon-range', label: 'HOCON / Range', children: renderHoconRangeTab() },
+              { key: 'run', label: '运行任务', children: renderRunTab() },
+              { key: 'runs', label: 'Runs', children: renderRunsTab() },
+              { key: 'batches', label: 'Batches', children: renderBatchesTab() },
+              { key: 'watermark', label: 'Watermark', children: renderWatermarkTab() },
+              { key: 'checks', label: 'Checks', children: renderChecksTab() },
+              { key: 'audits', label: 'Audits', children: renderAuditsTab() },
+            ]}
+          />
+        </Card>
       </div>
-
-      <Card className="task-bar">
-        <Row gutter={12} align="middle">
-          <Col flex="auto">
-            <Input
-              size="large"
-              prefix={<DatabaseOutlined />}
-              placeholder="输入 taskCode，后续所有 Tab 默认使用该任务"
-              value={taskCode}
-              onChange={(event) => setTaskCode(event.target.value)}
-            />
-          </Col>
-          <Col>
-            <Button size="large" icon={<ReloadOutlined />} onClick={refreshCurrentTask} loading={loading.refreshTask}>
-              刷新当前任务
-            </Button>
-          </Col>
-          <Col>
-            <Space>
-              <Text type="secondary">当前状态</Text>
-              {statusTag(diagnostic?.task?.status)}
-              {statusTag(diagnostic?.diagnostics?.level)}
-            </Space>
-          </Col>
-        </Row>
-      </Card>
-
-      <Card className="main-card">
-        <Tabs
-          activeKey={activeKey}
-          onChange={setActiveKey}
-          items={[
-            { key: 'template', label: '模板创建', children: renderCreateTab() },
-            { key: 'diagnose', label: '任务诊断', children: renderDiagnosticTab() },
-            { key: 'hocon-range', label: 'HOCON / Range', children: renderHoconRangeTab() },
-            { key: 'run', label: '运行任务', children: renderRunTab() },
-            { key: 'runs', label: 'Runs', children: renderRunsTab() },
-            { key: 'batches', label: 'Batches', children: renderBatchesTab() },
-            { key: 'watermark', label: 'Watermark', children: renderWatermarkTab() },
-            { key: 'checks', label: 'Checks', children: renderChecksTab() },
-            { key: 'audits', label: 'Audits', children: renderAuditsTab() },
-          ]}
-        />
-      </Card>
 
       <Drawer
         title={detailDrawer.title}

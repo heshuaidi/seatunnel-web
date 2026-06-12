@@ -48,6 +48,9 @@ Not covered in this template:
 - HOCON template: `docs/templates/generic_jdbc_sql_to_starrocks_incremental.conf`
 - Runtime template: `seatunnel-web-api/src/main/resources/sync/templates/generic_jdbc_sql_to_starrocks_incremental.conf`
 - StarRocks lab SQL: `docs/sql/generic_jdbc_sql_incremental_starrocks_lab.sql`
+- Frontend operation guide: `docs/sync-control-test-console-user-guide.md`
+
+For browser-based testing, prefer the frontend guide above. This document keeps the API-oriented reference and troubleshooting notes.
 
 ## Prepare Lab Tables
 
@@ -289,6 +292,12 @@ The current watermark must remain unchanged because watermark advancement happen
 This SOP is for JDBC / SQL / Oracle / StarRocks incremental batch source testing. It intentionally does not cover FtpFile, LocalFile, WAT, or CP file translator flows.
 
 ## Frontend Test Console
+
+Full step-by-step operation guide:
+
+```text
+docs/sync-control-test-console-user-guide.md
+```
 
 After starting `seatunnel-web-ui`, open the left menu:
 
