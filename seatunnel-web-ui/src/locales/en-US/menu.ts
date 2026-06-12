@@ -49,4 +49,13 @@ export default {
   'menu.editor.flow': 'Flow Editor',
   'menu.editor.mind': 'Mind Editor',
   'menu.editor.koni': 'Koni Editor',
+  'menu.datasource': 'Data Source',
+  'menu.client': 'Client',
+  'menu.data-sync': 'Data Sync',
+  'menu.data-sync.batch': 'Batch Sync',
+  'menu.data-sync.stream': 'Stream Sync',
+  'menu.sync-control': 'Incremental Sync',
+  'menu.sync-control.test-console': 'Incremental Sync Console',
+  'menu.metrics': 'Metrics',
+  'menu.knowledge-management': 'Knowledge',
 };

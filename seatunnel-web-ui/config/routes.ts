@@ -72,6 +72,12 @@ export default [
     hideInMenu: true,
   },
   {
+    icon: 'experiment',
+    name: 'sync-control.test-console',
+    path: '/sync-control/test-console',
+    component: './sync-control/test-console',
+  },
+  {
     icon: 'bulb',
     name: 'client',
     path: '/client',

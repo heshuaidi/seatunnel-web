@@ -1,0 +1,1367 @@
+package org.apache.seatunnel.web.api.service.impl;
+
+import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.seatunnel.web.api.service.HoconRenderService;
+import org.apache.seatunnel.web.api.service.SyncAuditService;
+import org.apache.seatunnel.web.api.service.SyncBatchService;
+import org.apache.seatunnel.web.api.service.SyncFileDiscoveryService;
+import org.apache.seatunnel.web.api.service.SyncRunCoordinatorService;
+import org.apache.seatunnel.web.api.service.SyncRunService;
+import org.apache.seatunnel.web.api.service.SyncVerifyService;
+import org.apache.seatunnel.web.api.service.SyncWatermarkService;
+import org.apache.seatunnel.web.api.service.SyncZetaClient;
+import org.apache.seatunnel.web.api.service.model.SyncJobStatusResult;
+import org.apache.seatunnel.web.api.service.model.SyncSubmitJobResult;
+import org.apache.seatunnel.web.api.service.model.VerifyResult;
+import org.apache.seatunnel.web.api.service.model.WatermarkRange;
+import org.apache.seatunnel.web.common.constants.SyncConstants;
+import org.apache.seatunnel.web.common.enums.SyncAuditEventType;
+import org.apache.seatunnel.web.common.enums.SyncBatchStatus;
+import org.apache.seatunnel.web.common.enums.SyncIncrementalStrategy;
+import org.apache.seatunnel.web.common.enums.SyncRunMode;
+import org.apache.seatunnel.web.common.enums.SyncRunStatus;
+import org.apache.seatunnel.web.common.enums.SyncSourceType;
+import org.apache.seatunnel.web.common.enums.SyncTaskStatus;
+import org.apache.seatunnel.web.common.enums.SyncTriggerType;
+import org.apache.seatunnel.web.common.utils.JSONUtils;
+import org.apache.seatunnel.web.core.exceptions.ServiceException;
+import org.apache.seatunnel.web.dao.entity.SyncAuditEntity;
+import org.apache.seatunnel.web.dao.entity.SyncBatchEntity;
+import org.apache.seatunnel.web.dao.entity.SyncFileItemEntity;
+import org.apache.seatunnel.web.dao.entity.SyncIncrementalConfigEntity;
+import org.apache.seatunnel.web.dao.entity.SyncRunEntity;
+import org.apache.seatunnel.web.dao.entity.SyncTaskEntity;
+import org.apache.seatunnel.web.dao.entity.SyncTaskVersionEntity;
+import org.apache.seatunnel.web.dao.entity.SyncWatermarkEntity;
+import org.apache.seatunnel.web.dao.repository.SyncIncrementalConfigDao;
+import org.apache.seatunnel.web.dao.repository.SyncTaskDao;
+import org.apache.seatunnel.web.dao.repository.SyncTaskVersionDao;
+import org.apache.seatunnel.web.spi.bean.dto.BackfillTaskRequest;
+import org.apache.seatunnel.web.spi.bean.dto.PreviewHoconRequest;
+import org.apache.seatunnel.web.spi.bean.dto.RunTaskRequest;
+import org.apache.seatunnel.web.spi.bean.dto.SyncRunRerunRequest;
+import org.apache.seatunnel.web.spi.bean.vo.HoconPreviewVO;
+import org.apache.seatunnel.web.spi.bean.vo.RunDetailVO;
+import org.apache.seatunnel.web.spi.bean.vo.RunResultVO;
+import org.apache.seatunnel.web.spi.bean.vo.SyncAuditItemVO;
+import org.apache.seatunnel.web.spi.bean.vo.WatermarkVO;
+import org.apache.seatunnel.web.spi.enums.Status;
+import org.springframework.stereotype.Service;
+
+import java.security.SecureRandom;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.util.Collections;
+import java.util.Date;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+@Slf4j
+@Service
+public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements SyncRunCoordinatorService {
+
+    private static final DateTimeFormatter DATE_TIME_FORMATTER =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
+    private static final DateTimeFormatter ID_TIME_FORMATTER =
+            DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
+
+    private static final SecureRandom RANDOM = new SecureRandom();
+
+    @Resource
+    private SyncTaskDao syncTaskDao;
+
+    @Resource
+    private SyncTaskVersionDao syncTaskVersionDao;
+
+    @Resource
+    private SyncIncrementalConfigDao syncIncrementalConfigDao;
+
+    @Resource
+    private SyncWatermarkService syncWatermarkService;
+
+    @Resource
+    private SyncBatchService syncBatchService;
+
+    @Resource
+    private SyncRunService syncRunService;
+
+    @Resource
+    private SyncAuditService syncAuditService;
+
+    @Resource
+    private HoconRenderService hoconRenderService;
+
+    @Resource
+    private SyncZetaClient syncZetaClient;
+
+    @Resource
+    private SyncVerifyService syncVerifyService;
+
+    @Resource
+    private SyncFileDiscoveryService syncFileDiscoveryService;
+
+    @Resource
+    private SyncRunProperties syncRunProperties;
+
+    @Override
+    public HoconPreviewVO previewHocon(String taskCode, PreviewHoconRequest request) {
+        SyncTaskEntity task = loadTaskByCode(taskCode);
+        SyncTaskVersionEntity version = loadRunnableVersion(task);
+        Map<String, Object> params = request == null ? Map.of() : nullToEmpty(request.getParams());
+        SyncIncrementalConfigEntity config = loadConfigIfIncremental(task);
+        WatermarkRange range = !isIncrementalEnabled(task) || isFileTask(task, config)
+                ? null
+                : syncWatermarkService.calculateNextRange(task.getId(), params);
+        Map<String, Object> variables = buildVariables(
+                task,
+                version,
+                null,
+                null,
+                range,
+                SyncTriggerType.MANUAL,
+                SyncRunMode.NORMAL,
+                config,
+                params
+        );
+        variables.put("run_id", "PREVIEW_RUN");
+        variables.put("batch_id", "PREVIEW_BATCH");
+
+        String rendered = hoconRenderService.render(version.getHoconTemplate(), variables);
+        HoconPreviewVO vo = new HoconPreviewVO();
+        vo.setTaskId(task.getId());
+        vo.setTaskCode(task.getTaskCode());
+        vo.setTaskVersionId(version.getId());
+        vo.setRenderedHocon(rendered);
+        vo.setHoconHash(hoconRenderService.calculateHash(rendered));
+        return vo;
+    }
+
+    @Override
+    public RunResultVO runTask(String taskCode, RunTaskRequest request) {
+        RunTaskRequest safeRequest = request == null ? new RunTaskRequest() : request;
+        Map<String, Object> params = nullToEmpty(safeRequest.getParams());
+        SyncTriggerType triggerType = parseTriggerType(safeRequest.getTriggerType(), SyncTriggerType.MANUAL);
+        SyncRunMode runMode = parseRunMode(safeRequest.getRunMode(), SyncRunMode.NORMAL);
+        boolean waitForFinish = safeRequest.getWaitForFinish() == null || Boolean.TRUE.equals(safeRequest.getWaitForFinish());
+
+        return execute(taskCode, params, triggerType, runMode, waitForFinish, false, null);
+    }
+
+    @Override
+    public RunResultVO backfillTask(String taskCode, BackfillTaskRequest request) {
+        if (request == null) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "backfillRequest");
+        }
+        Map<String, Object> params = new LinkedHashMap<>(nullToEmpty(request.getParams()));
+        putIfNotBlank(params, "startTime", request.getStartTime());
+        putIfNotBlank(params, "endTime", request.getEndTime());
+        putIfNotBlank(params, "startValue", request.getStartValue());
+        putIfNotBlank(params, "endValue", request.getEndValue());
+        boolean waitForFinish = request.getWaitForFinish() == null || Boolean.TRUE.equals(request.getWaitForFinish());
+
+        return execute(
+                taskCode,
+                params,
+                SyncTriggerType.BACKFILL,
+                SyncRunMode.BACKFILL,
+                waitForFinish,
+                true,
+                request.getAdvanceWatermark()
+        );
+    }
+
+    @Override
+    public RunResultVO rerun(String runId, SyncRunRerunRequest request) {
+        if (isBlank(runId)) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "runId");
+        }
+        SyncRunRerunRequest safeRequest = request == null ? new SyncRunRerunRequest() : request;
+        String mode = isBlank(safeRequest.getMode()) ? "RERUN_SAME_RANGE" : safeRequest.getMode().trim().toUpperCase();
+        if (!"RERUN_SAME_RANGE".equals(mode)) {
+            throw new ServiceException("Unsupported rerun mode: " + safeRequest.getMode());
+        }
+
+        SyncRunEntity originalRun = syncRunService.getByRunId(runId);
+        if (originalRun == null) {
+            throw new ServiceException("Sync run not found, runId=" + runId);
+        }
+        if (isBlank(originalRun.getBatchId())) {
+            throw new ServiceException("Original run has no batch range, runId=" + runId);
+        }
+        SyncBatchEntity originalBatch = syncBatchService.getByBatchId(originalRun.getBatchId());
+        if (originalBatch == null) {
+            throw new ServiceException("Original sync batch not found, batchId=" + originalRun.getBatchId());
+        }
+
+        SyncTaskEntity task = syncTaskDao.queryById(originalRun.getTaskId());
+        if (task == null) {
+            throw new ServiceException("Sync task not found, taskId=" + originalRun.getTaskId());
+        }
+        validateRunnableTask(task);
+        SyncTaskVersionEntity version = loadRunnableVersion(task);
+        SyncIncrementalConfigEntity config = loadConfigIfIncremental(task);
+        if (!isIncrementalEnabled(task) || config == null) {
+            throw new ServiceException("Only incremental JDBC/SQL tasks support RERUN_SAME_RANGE in current version");
+        }
+        if (isFileTask(task, config)) {
+            throw new ServiceException("File source rerun is not supported in this round, taskCode=" + task.getTaskCode());
+        }
+
+        WatermarkRange range = toRerunRange(config, originalBatch);
+        boolean waitForFinish = safeRequest.getWaitForFinish() == null || Boolean.TRUE.equals(safeRequest.getWaitForFinish());
+        return executePreparedIncrementalRange(
+                task,
+                version,
+                config,
+                range,
+                nullToEmpty(safeRequest.getParams()),
+                SyncTriggerType.RETRY,
+                SyncRunMode.RERUN,
+                waitForFinish
+        );
+    }
+
+    @Override
+    public RunDetailVO getRun(String runId) {
+        SyncRunEntity run = syncRunService.getByRunId(runId);
+        if (run == null) {
+            throw new ServiceException("Sync run not found, runId=" + runId);
+        }
+
+        SyncTaskEntity task = syncTaskDao.queryById(run.getTaskId());
+        SyncBatchEntity batch = isBlank(run.getBatchId()) ? null : syncBatchService.getByBatchId(run.getBatchId());
+        List<SyncAuditEntity> audits = syncAuditService.listByRunId(run.getRunId());
+
+        RunDetailVO vo = new RunDetailVO();
+        vo.setTaskId(run.getTaskId());
+        vo.setTaskCode(task == null ? null : task.getTaskCode());
+        vo.setRunId(run.getRunId());
+        vo.setBatchId(run.getBatchId());
+        vo.setTaskVersionId(run.getTaskVersionId());
+        vo.setTriggerType(run.getTriggerType() == null ? null : run.getTriggerType().getCode());
+        vo.setRunStatus(run.getStatus() == null ? null : run.getStatus().getCode());
+        vo.setBatchStatus(batch == null || batch.getStatus() == null ? null : batch.getStatus().getCode());
+        vo.setSeatunnelJobId(run.getSeatunnelJobId());
+        vo.setSeatunnelJobName(run.getSeatunnelJobName());
+        vo.setErrorMessage(run.getErrorMessage());
+        vo.setGeneratedHocon(run.getGeneratedHocon());
+        vo.setSourceCount(run.getSourceCount());
+        vo.setSinkCount(run.getSinkCount());
+        vo.setErrorCount(run.getErrorCount());
+        vo.setCreateTime(formatDate(run.getCreateTime()));
+        vo.setUpdateTime(formatDate(run.getUpdateTime()));
+        vo.setSubmitTime(formatDate(run.getSubmitTime()));
+        vo.setStartTime(formatDate(run.getStartTime()));
+        vo.setEndTime(formatDate(run.getEndTime()));
+        vo.setAudits(audits.stream().map(this::toAuditVO).collect(Collectors.toList()));
+        return vo;
+    }
+
+    @Override
+    public List<WatermarkVO> getWatermark(String taskCode) {
+        SyncTaskEntity task = loadTaskByCode(taskCode);
+        List<SyncWatermarkEntity> watermarks = syncWatermarkService.listByTaskId(task.getId());
+        return watermarks.stream().map(item -> toWatermarkVO(task, item)).collect(Collectors.toList());
+    }
+
+    private RunResultVO execute(
+            String taskCode,
+            Map<String, Object> params,
+            SyncTriggerType triggerType,
+            SyncRunMode runMode,
+            boolean waitForFinish,
+            boolean backfill,
+            Boolean backfillAdvanceWatermark
+    ) {
+        SyncTaskEntity task = loadTaskByCode(taskCode);
+        validateRunnableTask(task);
+        SyncTaskVersionEntity version = loadRunnableVersion(task);
+        SyncIncrementalConfigEntity config = loadConfigIfIncremental(task);
+        if (!isIncrementalEnabled(task)) {
+            return executeNonIncrementalTask(task, version, params, triggerType, runMode, waitForFinish);
+        }
+        if (isFileTask(task, config)) {
+            return executeFileTask(task, version, config, params, triggerType, runMode, waitForFinish);
+        }
+
+        WatermarkRange range = null;
+        SyncBatchEntity batch = null;
+        SyncRunEntity run = null;
+
+        try {
+            syncAuditService.appendInfo(null, null, task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.READ_WATERMARK, "Start calculating watermark range", params);
+            range = backfill
+                    ? syncWatermarkService.calculateBackfillRange(task.getId(), params, backfillAdvanceWatermark)
+                    : syncWatermarkService.calculateNextRange(task.getId(), params);
+            syncAuditService.appendInfo(null, null, task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.READ_WATERMARK, "Watermark range calculated", range);
+
+            batch = syncBatchService.createBatchForRun(task, range, triggerType, runMode);
+            syncAuditService.appendInfo(null, batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.CREATE_BATCH, "Sync batch created", batch);
+
+            updateBatchStatus(batch, SyncBatchStatus.READY, null);
+            auditStatus(null, batch, task, SyncAuditEventType.CREATE_BATCH, "Sync batch is ready", SyncBatchStatus.READY);
+
+            run = createRun(task, version, batch, triggerType, params);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.CREATE_RUN, "Sync run created", run);
+
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.RENDER_HOCON, "Start rendering HOCON", null);
+            Map<String, Object> variables = buildVariables(task, version, run, batch, range, triggerType, runMode, config, params);
+            String generatedHocon = hoconRenderService.render(version.getHoconTemplate(), variables);
+            String hoconHash = hoconRenderService.calculateHash(generatedHocon);
+            syncRunService.updateGeneratedHocon(run.getRunId(), generatedHocon);
+            run.setGeneratedHocon(generatedHocon);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.RENDER_HOCON, "HOCON rendered", Map.of("hoconHash", hoconHash));
+
+            String jobName = buildSeatunnelJobName(task, run);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.SUBMIT_JOB, "Start submitting SeaTunnel job", Map.of("jobName", jobName));
+            SyncSubmitJobResult submitResult = syncZetaClient.submitJob(task.getClientId(), jobName, generatedHocon);
+            syncRunService.updateSeatunnelJob(run.getRunId(), submitResult.getJobId(), submitResult.getJobName());
+            run.setSeatunnelJobId(submitResult.getJobId());
+            run.setSeatunnelJobName(submitResult.getJobName());
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.SUBMIT_JOB, "SeaTunnel job submitted", submitResult.getRawResponse());
+
+            updateBatchStatus(batch, SyncBatchStatus.SUBMITTED, null);
+            updateRunStatus(run, SyncRunStatus.SUBMITTED, null);
+
+            if (!waitForFinish) {
+                return toRunResult(task, version, batch, run, false);
+            }
+
+            updateBatchStatus(batch, SyncBatchStatus.RUNNING, null);
+            updateRunStatus(run, SyncRunStatus.RUNNING, null);
+
+            SyncJobStatusResult finalStatus = pollUntilFinished(task, batch, run);
+            if (!finalStatus.isSuccess()) {
+                throw new ServiceException("SeaTunnel job failed: " + finalStatus.getStatus()
+                        + (isBlank(finalStatus.getErrorMessage()) ? "" : ", " + finalStatus.getErrorMessage()));
+            }
+
+            updateBatchStatus(batch, SyncBatchStatus.VERIFYING, null);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.VERIFYING,
+                    "SeaTunnel job success, start verification",
+                    finalStatus.getRawResponse());
+            VerifyResult verifyResult = syncVerifyService.verifyRun(task, batch, run, variables);
+            syncBatchService.updateMetrics(
+                    batch.getBatchId(),
+                    verifyResult.getSourceCount(),
+                    verifyResult.getSinkCount(),
+                    verifyResult.getErrorCount()
+            );
+            syncRunService.updateMetrics(
+                    run.getRunId(),
+                    verifyResult.getSourceCount(),
+                    verifyResult.getSinkCount(),
+                    verifyResult.getErrorCount()
+            );
+            batch.setSourceCount(verifyResult.getSourceCount());
+            batch.setSinkCount(verifyResult.getSinkCount());
+            batch.setErrorCount(verifyResult.getErrorCount());
+            run.setSourceCount(verifyResult.getSourceCount());
+            run.setSinkCount(verifyResult.getSinkCount());
+            run.setErrorCount(verifyResult.getErrorCount());
+            if (!verifyResult.isPassed() || verifyResult.isHasBlockingFailure()) {
+                throw new ServiceException("Sync verification failed: " + verifyResult.getErrorMessage());
+            }
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.VERIFYING,
+                    "Sync verification passed",
+                    verificationDetail(verifyResult));
+
+            boolean watermarkAdvanced = false;
+            if (range.isAdvanceWatermark()) {
+                syncWatermarkService.advanceWatermark(
+                        task.getId(),
+                        range.getWatermarkKey(),
+                        range.getEndValue(),
+                        run.getId(),
+                        batch.getBatchId()
+                );
+                watermarkAdvanced = true;
+                syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                        SyncAuditEventType.ADVANCE_WATERMARK,
+                        "Watermark advanced after successful run",
+                        Map.of("newValue", range.getEndValue(), "watermarkKey", range.getWatermarkKey()));
+            } else {
+                syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                        SyncAuditEventType.ADVANCE_WATERMARK,
+                        "Watermark advance skipped",
+                        Map.of("backfill", range.isBackfill(), "advanceWatermark", range.isAdvanceWatermark()));
+            }
+
+            updateBatchStatus(batch, SyncBatchStatus.SUCCESS, null);
+            updateRunStatus(run, SyncRunStatus.SUCCESS, null);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.RUN_SUCCESS, "Sync run success", null);
+
+            RunResultVO result = toRunResult(task, version, batch, run, watermarkAdvanced);
+            result.setRunStatus(SyncRunStatus.SUCCESS.getCode());
+            result.setBatchStatus(SyncBatchStatus.SUCCESS.getCode());
+            return result;
+        } catch (Exception e) {
+            String message = e.getMessage() == null ? e.toString() : e.getMessage();
+            log.error("Sync run failed, taskCode={}, batchId={}, runId={}",
+                    task.getTaskCode(),
+                    batch == null ? null : batch.getBatchId(),
+                    run == null ? null : run.getRunId(),
+                    e);
+
+            if (batch != null) {
+                updateBatchStatus(batch, SyncBatchStatus.FAILED, message);
+            }
+            if (run != null) {
+                updateRunStatus(run, SyncRunStatus.FAILED, message);
+            }
+            if (range != null) {
+                syncWatermarkService.rollbackOrKeepWatermarkOnFailure(
+                        task.getId(),
+                        range.getWatermarkKey(),
+                        run == null ? null : run.getId(),
+                        batch == null ? null : batch.getBatchId()
+                );
+            }
+            syncAuditService.appendError(
+                    run == null ? null : run.getRunId(),
+                    batch == null ? null : batch.getBatchId(),
+                    task.getId(),
+                    task.getTaskCode(),
+                    SyncAuditEventType.RUN_FAILED,
+                    "Sync run failed, watermark is not advanced",
+                    Map.of("errorMessage", message)
+            );
+            if (e instanceof ServiceException) {
+                throw (ServiceException) e;
+            }
+            throw new ServiceException(message, e);
+        }
+    }
+
+    private RunResultVO executeNonIncrementalTask(
+            SyncTaskEntity task,
+            SyncTaskVersionEntity version,
+            Map<String, Object> params,
+            SyncTriggerType triggerType,
+            SyncRunMode runMode,
+            boolean waitForFinish
+    ) {
+        SyncBatchEntity batch = null;
+        SyncRunEntity run = null;
+        Map<String, Object> variables = Collections.emptyMap();
+
+        try {
+            batch = syncBatchService.createFileBatchForRun(task, triggerType, runMode, null, null);
+            syncAuditService.appendInfo(null, batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.CREATE_BATCH, "Non-incremental sync batch created", batch);
+
+            updateBatchStatus(batch, SyncBatchStatus.READY, null);
+            auditStatus(null, batch, task, SyncAuditEventType.CREATE_BATCH,
+                    "Non-incremental sync batch is ready", SyncBatchStatus.READY);
+
+            run = createRun(task, version, batch, triggerType, params);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.CREATE_RUN, "Non-incremental sync run created", run);
+
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.RENDER_HOCON, "Start rendering non-incremental HOCON", null);
+            variables = buildVariables(task, version, run, batch, null, triggerType, runMode, null, params);
+            String generatedHocon = hoconRenderService.render(version.getHoconTemplate(), variables);
+            String hoconHash = hoconRenderService.calculateHash(generatedHocon);
+            syncRunService.updateGeneratedHocon(run.getRunId(), generatedHocon);
+            run.setGeneratedHocon(generatedHocon);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.RENDER_HOCON, "Non-incremental HOCON rendered", Map.of("hoconHash", hoconHash));
+
+            String jobName = buildSeatunnelJobName(task, run);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.SUBMIT_JOB, "Start submitting non-incremental SeaTunnel job", Map.of("jobName", jobName));
+            SyncSubmitJobResult submitResult = syncZetaClient.submitJob(task.getClientId(), jobName, generatedHocon);
+            syncRunService.updateSeatunnelJob(run.getRunId(), submitResult.getJobId(), submitResult.getJobName());
+            run.setSeatunnelJobId(submitResult.getJobId());
+            run.setSeatunnelJobName(submitResult.getJobName());
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.SUBMIT_JOB, "Non-incremental SeaTunnel job submitted", submitResult.getRawResponse());
+
+            updateBatchStatus(batch, SyncBatchStatus.SUBMITTED, null);
+            updateRunStatus(run, SyncRunStatus.SUBMITTED, null);
+
+            if (!waitForFinish) {
+                return toRunResult(task, version, batch, run, false);
+            }
+
+            updateBatchStatus(batch, SyncBatchStatus.RUNNING, null);
+            updateRunStatus(run, SyncRunStatus.RUNNING, null);
+
+            SyncJobStatusResult finalStatus = pollUntilFinished(task, batch, run);
+            if (!finalStatus.isSuccess()) {
+                throw new ServiceException("SeaTunnel job failed: " + finalStatus.getStatus()
+                        + (isBlank(finalStatus.getErrorMessage()) ? "" : ", " + finalStatus.getErrorMessage()));
+            }
+
+            updateBatchStatus(batch, SyncBatchStatus.VERIFYING, null);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.VERIFYING,
+                    "Non-incremental SeaTunnel job success, start verification",
+                    finalStatus.getRawResponse());
+            VerifyResult verifyResult = syncVerifyService.verifyRun(task, batch, run, variables);
+            syncBatchService.updateMetrics(
+                    batch.getBatchId(),
+                    verifyResult.getSourceCount(),
+                    verifyResult.getSinkCount(),
+                    verifyResult.getErrorCount()
+            );
+            syncRunService.updateMetrics(
+                    run.getRunId(),
+                    verifyResult.getSourceCount(),
+                    verifyResult.getSinkCount(),
+                    verifyResult.getErrorCount()
+            );
+            batch.setSourceCount(verifyResult.getSourceCount());
+            batch.setSinkCount(verifyResult.getSinkCount());
+            batch.setErrorCount(verifyResult.getErrorCount());
+            run.setSourceCount(verifyResult.getSourceCount());
+            run.setSinkCount(verifyResult.getSinkCount());
+            run.setErrorCount(verifyResult.getErrorCount());
+            if (!verifyResult.isPassed() || verifyResult.isHasBlockingFailure()) {
+                throw new ServiceException("Sync verification failed: " + verifyResult.getErrorMessage());
+            }
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.VERIFYING,
+                    "Non-incremental sync verification passed",
+                    verificationDetail(verifyResult));
+
+            updateBatchStatus(batch, SyncBatchStatus.SUCCESS, null);
+            updateRunStatus(run, SyncRunStatus.SUCCESS, null);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.RUN_SUCCESS,
+                    "Non-incremental sync run success",
+                    Map.of("watermarkAdvanced", false));
+
+            RunResultVO result = toRunResult(task, version, batch, run, false);
+            result.setRunStatus(SyncRunStatus.SUCCESS.getCode());
+            result.setBatchStatus(SyncBatchStatus.SUCCESS.getCode());
+            return result;
+        } catch (Exception e) {
+            String message = e.getMessage() == null ? e.toString() : e.getMessage();
+            log.error("Non-incremental sync run failed, taskCode={}, batchId={}, runId={}",
+                    task.getTaskCode(),
+                    batch == null ? null : batch.getBatchId(),
+                    run == null ? null : run.getRunId(),
+                    e);
+
+            if (batch != null) {
+                updateBatchStatus(batch, SyncBatchStatus.FAILED, message);
+            }
+            if (run != null) {
+                updateRunStatus(run, SyncRunStatus.FAILED, message);
+            }
+            syncAuditService.appendError(
+                    run == null ? null : run.getRunId(),
+                    batch == null ? null : batch.getBatchId(),
+                    task.getId(),
+                    task.getTaskCode(),
+                    SyncAuditEventType.RUN_FAILED,
+                    "Non-incremental sync run failed, watermark is not used",
+                    Map.of("errorMessage", message)
+            );
+            if (e instanceof ServiceException) {
+                throw (ServiceException) e;
+            }
+            throw new ServiceException(message, e);
+        }
+    }
+
+    private RunResultVO executePreparedIncrementalRange(
+            SyncTaskEntity task,
+            SyncTaskVersionEntity version,
+            SyncIncrementalConfigEntity config,
+            WatermarkRange range,
+            Map<String, Object> params,
+            SyncTriggerType triggerType,
+            SyncRunMode runMode,
+            boolean waitForFinish
+    ) {
+        SyncBatchEntity batch = null;
+        SyncRunEntity run = null;
+
+        try {
+            syncAuditService.appendInfo(null, null, task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.READ_WATERMARK, "Use prepared watermark range for rerun", range);
+
+            batch = syncBatchService.createBatchForRun(task, range, triggerType, runMode);
+            syncAuditService.appendInfo(null, batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.CREATE_BATCH, "Rerun sync batch created", batch);
+
+            updateBatchStatus(batch, SyncBatchStatus.READY, null);
+            auditStatus(null, batch, task, SyncAuditEventType.CREATE_BATCH, "Rerun sync batch is ready", SyncBatchStatus.READY);
+
+            run = createRun(task, version, batch, triggerType, params);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.CREATE_RUN, "Rerun sync run created", run);
+
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.RENDER_HOCON, "Start rendering rerun HOCON", null);
+            Map<String, Object> variables = buildVariables(task, version, run, batch, range, triggerType, runMode, config, params);
+            String generatedHocon = hoconRenderService.render(version.getHoconTemplate(), variables);
+            String hoconHash = hoconRenderService.calculateHash(generatedHocon);
+            syncRunService.updateGeneratedHocon(run.getRunId(), generatedHocon);
+            run.setGeneratedHocon(generatedHocon);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.RENDER_HOCON, "Rerun HOCON rendered", Map.of("hoconHash", hoconHash));
+
+            String jobName = buildSeatunnelJobName(task, run);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.SUBMIT_JOB, "Start submitting rerun SeaTunnel job", Map.of("jobName", jobName));
+            SyncSubmitJobResult submitResult = syncZetaClient.submitJob(task.getClientId(), jobName, generatedHocon);
+            syncRunService.updateSeatunnelJob(run.getRunId(), submitResult.getJobId(), submitResult.getJobName());
+            run.setSeatunnelJobId(submitResult.getJobId());
+            run.setSeatunnelJobName(submitResult.getJobName());
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.SUBMIT_JOB, "Rerun SeaTunnel job submitted", submitResult.getRawResponse());
+
+            updateBatchStatus(batch, SyncBatchStatus.SUBMITTED, null);
+            updateRunStatus(run, SyncRunStatus.SUBMITTED, null);
+
+            if (!waitForFinish) {
+                return toRunResult(task, version, batch, run, false);
+            }
+
+            updateBatchStatus(batch, SyncBatchStatus.RUNNING, null);
+            updateRunStatus(run, SyncRunStatus.RUNNING, null);
+
+            SyncJobStatusResult finalStatus = pollUntilFinished(task, batch, run);
+            if (!finalStatus.isSuccess()) {
+                throw new ServiceException("SeaTunnel job failed: " + finalStatus.getStatus()
+                        + (isBlank(finalStatus.getErrorMessage()) ? "" : ", " + finalStatus.getErrorMessage()));
+            }
+
+            updateBatchStatus(batch, SyncBatchStatus.VERIFYING, null);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.VERIFYING,
+                    "Rerun SeaTunnel job success, start verification",
+                    finalStatus.getRawResponse());
+            VerifyResult verifyResult = syncVerifyService.verifyRun(task, batch, run, variables);
+            syncBatchService.updateMetrics(
+                    batch.getBatchId(),
+                    verifyResult.getSourceCount(),
+                    verifyResult.getSinkCount(),
+                    verifyResult.getErrorCount()
+            );
+            syncRunService.updateMetrics(
+                    run.getRunId(),
+                    verifyResult.getSourceCount(),
+                    verifyResult.getSinkCount(),
+                    verifyResult.getErrorCount()
+            );
+            batch.setSourceCount(verifyResult.getSourceCount());
+            batch.setSinkCount(verifyResult.getSinkCount());
+            batch.setErrorCount(verifyResult.getErrorCount());
+            run.setSourceCount(verifyResult.getSourceCount());
+            run.setSinkCount(verifyResult.getSinkCount());
+            run.setErrorCount(verifyResult.getErrorCount());
+            if (!verifyResult.isPassed() || verifyResult.isHasBlockingFailure()) {
+                throw new ServiceException("Sync verification failed: " + verifyResult.getErrorMessage());
+            }
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.VERIFYING,
+                    "Rerun sync verification passed",
+                    verificationDetail(verifyResult));
+
+            boolean watermarkAdvanced = false;
+            if (range.isAdvanceWatermark()) {
+                syncWatermarkService.advanceWatermark(
+                        task.getId(),
+                        range.getWatermarkKey(),
+                        range.getEndValue(),
+                        run.getId(),
+                        batch.getBatchId()
+                );
+                watermarkAdvanced = true;
+                syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                        SyncAuditEventType.ADVANCE_WATERMARK,
+                        "Watermark advanced after successful rerun",
+                        Map.of("newValue", range.getEndValue(), "watermarkKey", range.getWatermarkKey()));
+            }
+
+            updateBatchStatus(batch, SyncBatchStatus.SUCCESS, null);
+            updateRunStatus(run, SyncRunStatus.SUCCESS, null);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.RUN_SUCCESS, "Rerun sync run success", null);
+
+            RunResultVO result = toRunResult(task, version, batch, run, watermarkAdvanced);
+            result.setRunStatus(SyncRunStatus.SUCCESS.getCode());
+            result.setBatchStatus(SyncBatchStatus.SUCCESS.getCode());
+            return result;
+        } catch (Exception e) {
+            String message = e.getMessage() == null ? e.toString() : e.getMessage();
+            log.error("Sync rerun failed, taskCode={}, batchId={}, runId={}",
+                    task.getTaskCode(),
+                    batch == null ? null : batch.getBatchId(),
+                    run == null ? null : run.getRunId(),
+                    e);
+
+            if (batch != null) {
+                updateBatchStatus(batch, SyncBatchStatus.FAILED, message);
+            }
+            if (run != null) {
+                updateRunStatus(run, SyncRunStatus.FAILED, message);
+            }
+            syncWatermarkService.rollbackOrKeepWatermarkOnFailure(
+                    task.getId(),
+                    range.getWatermarkKey(),
+                    run == null ? null : run.getId(),
+                    batch == null ? null : batch.getBatchId()
+            );
+            syncAuditService.appendError(
+                    run == null ? null : run.getRunId(),
+                    batch == null ? null : batch.getBatchId(),
+                    task.getId(),
+                    task.getTaskCode(),
+                    SyncAuditEventType.RUN_FAILED,
+                    "Rerun failed, watermark is not advanced",
+                    Map.of("errorMessage", message)
+            );
+            if (e instanceof ServiceException) {
+                throw (ServiceException) e;
+            }
+            throw new ServiceException(message, e);
+        }
+    }
+
+    private RunResultVO executeFileTask(
+            SyncTaskEntity task,
+            SyncTaskVersionEntity version,
+            SyncIncrementalConfigEntity config,
+            Map<String, Object> params,
+            SyncTriggerType triggerType,
+            SyncRunMode runMode,
+            boolean waitForFinish
+    ) {
+        SyncBatchEntity batch = null;
+        SyncRunEntity run = null;
+        List<SyncFileItemEntity> claimedFiles = Collections.emptyList();
+        Map<String, Object> variables = Collections.emptyMap();
+
+        try {
+            syncFileDiscoveryService.discoverFiles(task.getId());
+
+            Date discoveryTime = now();
+            batch = syncBatchService.createFileBatchForRun(task, triggerType, runMode, discoveryTime, discoveryTime);
+            syncAuditService.appendInfo(null, batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.CREATE_BATCH, "File sync batch created", batch);
+
+            updateBatchStatus(batch, SyncBatchStatus.READY, null);
+            auditStatus(null, batch, task, SyncAuditEventType.CREATE_BATCH, "File sync batch is ready", SyncBatchStatus.READY);
+
+            int maxFiles = resolveMaxFiles(config, params);
+            claimedFiles = syncFileDiscoveryService.claimFilesForBatch(task.getId(), batch.getBatchId(), maxFiles);
+            long claimedCount = claimedFiles.size();
+            syncBatchService.updateMetrics(batch.getBatchId(), claimedCount, null, 0L);
+            batch.setSourceCount(claimedCount);
+            batch.setErrorCount(0L);
+
+            run = createRun(task, version, batch, triggerType, params);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.CREATE_RUN, "File sync run created", run);
+            syncRunService.updateMetrics(run.getRunId(), claimedCount, null, 0L);
+            run.setSourceCount(claimedCount);
+            run.setErrorCount(0L);
+
+            if (claimedFiles.isEmpty()) {
+                updateBatchStatus(batch, SyncBatchStatus.SUCCESS, null);
+                updateRunStatus(run, SyncRunStatus.SUCCESS, null);
+                syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                        SyncAuditEventType.RUN_SUCCESS,
+                        "File sync run skipped because no files were claimed",
+                        Map.of("claimedCount", 0, "watermarkAdvanced", false));
+                RunResultVO result = toRunResult(task, version, batch, run, false);
+                result.setRunStatus(SyncRunStatus.SUCCESS.getCode());
+                result.setBatchStatus(SyncBatchStatus.SUCCESS.getCode());
+                return result;
+            }
+
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.RENDER_HOCON, "Start rendering file sync HOCON", null);
+            variables = buildVariables(
+                    task,
+                    version,
+                    run,
+                    batch,
+                    null,
+                    triggerType,
+                    runMode,
+                    config,
+                    params,
+                    claimedFiles
+            );
+            String generatedHocon = hoconRenderService.render(version.getHoconTemplate(), variables);
+            String hoconHash = hoconRenderService.calculateHash(generatedHocon);
+            syncRunService.updateGeneratedHocon(run.getRunId(), generatedHocon);
+            run.setGeneratedHocon(generatedHocon);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.RENDER_HOCON, "File sync HOCON rendered", Map.of("hoconHash", hoconHash));
+
+            String jobName = buildSeatunnelJobName(task, run);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.SUBMIT_JOB, "Start submitting file sync SeaTunnel job", Map.of("jobName", jobName));
+            SyncSubmitJobResult submitResult = syncZetaClient.submitJob(task.getClientId(), jobName, generatedHocon);
+            syncRunService.updateSeatunnelJob(run.getRunId(), submitResult.getJobId(), submitResult.getJobName());
+            run.setSeatunnelJobId(submitResult.getJobId());
+            run.setSeatunnelJobName(submitResult.getJobName());
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.SUBMIT_JOB, "File sync SeaTunnel job submitted", submitResult.getRawResponse());
+
+            updateBatchStatus(batch, SyncBatchStatus.SUBMITTED, null);
+            updateRunStatus(run, SyncRunStatus.SUBMITTED, null);
+            syncFileDiscoveryService.markFilesProcessing(batch.getBatchId(), run.getRunId());
+
+            if (!waitForFinish) {
+                return toRunResult(task, version, batch, run, false);
+            }
+
+            updateBatchStatus(batch, SyncBatchStatus.RUNNING, null);
+            updateRunStatus(run, SyncRunStatus.RUNNING, null);
+
+            SyncJobStatusResult finalStatus = pollUntilFinished(task, batch, run);
+            if (!finalStatus.isSuccess()) {
+                throw new ServiceException("SeaTunnel job failed: " + finalStatus.getStatus()
+                        + (isBlank(finalStatus.getErrorMessage()) ? "" : ", " + finalStatus.getErrorMessage()));
+            }
+
+            updateBatchStatus(batch, SyncBatchStatus.VERIFYING, null);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.VERIFYING,
+                    "File sync SeaTunnel job success, start verification",
+                    finalStatus.getRawResponse());
+            VerifyResult verifyResult = syncVerifyService.verifyRun(task, batch, run, variables);
+            Long sourceCount = firstNonNull(verifyResult.getSourceCount(), claimedCount);
+            Long sinkCount = verifyResult.getSinkCount();
+            Long errorCount = firstNonNull(verifyResult.getErrorCount(), 0L);
+            syncBatchService.updateMetrics(batch.getBatchId(), sourceCount, sinkCount, errorCount);
+            syncRunService.updateMetrics(run.getRunId(), sourceCount, sinkCount, errorCount);
+            batch.setSourceCount(sourceCount);
+            batch.setSinkCount(sinkCount);
+            batch.setErrorCount(errorCount);
+            run.setSourceCount(sourceCount);
+            run.setSinkCount(sinkCount);
+            run.setErrorCount(errorCount);
+            if (!verifyResult.isPassed() || verifyResult.isHasBlockingFailure()) {
+                throw new ServiceException("Sync verification failed: " + verifyResult.getErrorMessage());
+            }
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.VERIFYING,
+                    "File sync verification passed",
+                    verificationDetail(verifyResult));
+
+            syncFileDiscoveryService.markFilesSuccess(batch.getBatchId(), run.getRunId());
+            updateBatchStatus(batch, SyncBatchStatus.SUCCESS, null);
+            updateRunStatus(run, SyncRunStatus.SUCCESS, null);
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.RUN_SUCCESS,
+                    "File sync run success",
+                    Map.of("claimedCount", claimedCount, "successCount", claimedCount, "watermarkAdvanced", false));
+
+            RunResultVO result = toRunResult(task, version, batch, run, false);
+            result.setRunStatus(SyncRunStatus.SUCCESS.getCode());
+            result.setBatchStatus(SyncBatchStatus.SUCCESS.getCode());
+            return result;
+        } catch (Exception e) {
+            String message = e.getMessage() == null ? e.toString() : e.getMessage();
+            log.error("File sync run failed, taskCode={}, batchId={}, runId={}",
+                    task.getTaskCode(),
+                    batch == null ? null : batch.getBatchId(),
+                    run == null ? null : run.getRunId(),
+                    e);
+
+            if (batch != null && !claimedFiles.isEmpty()) {
+                syncFileDiscoveryService.markFilesFailed(
+                        batch.getBatchId(),
+                        run == null ? null : run.getRunId(),
+                        message
+                );
+                syncBatchService.updateMetrics(batch.getBatchId(), (long) claimedFiles.size(), null, (long) claimedFiles.size());
+                batch.setSourceCount((long) claimedFiles.size());
+                batch.setErrorCount((long) claimedFiles.size());
+                if (run != null) {
+                    syncRunService.updateMetrics(run.getRunId(), (long) claimedFiles.size(), null, (long) claimedFiles.size());
+                    run.setSourceCount((long) claimedFiles.size());
+                    run.setErrorCount((long) claimedFiles.size());
+                }
+            }
+            if (batch != null) {
+                updateBatchStatus(batch, SyncBatchStatus.FAILED, message);
+            }
+            if (run != null) {
+                updateRunStatus(run, SyncRunStatus.FAILED, message);
+            }
+            syncAuditService.appendError(
+                    run == null ? null : run.getRunId(),
+                    batch == null ? null : batch.getBatchId(),
+                    task.getId(),
+                    task.getTaskCode(),
+                    SyncAuditEventType.RUN_FAILED,
+                    "File sync run failed, file cursor is not advanced",
+                    Map.of("errorMessage", message, "claimedCount", claimedFiles.size())
+            );
+            if (e instanceof ServiceException) {
+                throw (ServiceException) e;
+            }
+            throw new ServiceException(message, e);
+        }
+    }
+
+    private SyncRunEntity createRun(
+            SyncTaskEntity task,
+            SyncTaskVersionEntity version,
+            SyncBatchEntity batch,
+            SyncTriggerType triggerType,
+            Map<String, Object> params
+    ) {
+        Date now = now();
+        SyncRunEntity run = SyncRunEntity.builder()
+                .runId(generateRunId(task.getTaskCode()))
+                .taskId(task.getId())
+                .taskVersionId(version.getId())
+                .batchId(batch.getBatchId())
+                .triggerType(triggerType)
+                .runParamJson(JSONUtils.toJsonString(params))
+                .status(SyncRunStatus.CREATED)
+                .createTime(now)
+                .updateTime(now)
+                .build();
+        syncRunService.create(run);
+        return run;
+    }
+
+    private SyncJobStatusResult pollUntilFinished(SyncTaskEntity task, SyncBatchEntity batch, SyncRunEntity run)
+            throws InterruptedException {
+        long started = System.currentTimeMillis();
+        SyncJobStatusResult latest = null;
+
+        while (System.currentTimeMillis() - started <= syncRunProperties.getPollTimeoutMs()) {
+            latest = syncZetaClient.getJobStatus(task.getClientId(), run.getSeatunnelJobId());
+            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.POLL_STATUS, "SeaTunnel job status polled", latest);
+            if (latest.isEndState()) {
+                return latest;
+            }
+            Thread.sleep(syncRunProperties.getPollIntervalMs());
+        }
+
+        throw new ServiceException("SeaTunnel job poll timeout, jobId=" + run.getSeatunnelJobId()
+                + ", lastStatus=" + (latest == null ? null : latest.getStatus()));
+    }
+
+    private Map<String, Object> buildVariables(
+            SyncTaskEntity task,
+            SyncTaskVersionEntity version,
+            SyncRunEntity run,
+            SyncBatchEntity batch,
+            WatermarkRange range,
+            SyncTriggerType triggerType,
+            SyncRunMode runMode,
+            SyncIncrementalConfigEntity config,
+            Map<String, Object> params
+    ) {
+        return buildVariables(task, version, run, batch, range, triggerType, runMode, config, params, Collections.emptyList());
+    }
+
+    private Map<String, Object> buildVariables(
+            SyncTaskEntity task,
+            SyncTaskVersionEntity version,
+            SyncRunEntity run,
+            SyncBatchEntity batch,
+            WatermarkRange range,
+            SyncTriggerType triggerType,
+            SyncRunMode runMode,
+            SyncIncrementalConfigEntity config,
+            Map<String, Object> params,
+            List<SyncFileItemEntity> batchFiles
+    ) {
+        Map<String, Object> variables = new LinkedHashMap<>();
+        variables.putAll(params == null ? Map.of() : params);
+        variables.put("task_id", task.getId());
+        variables.put("task_code", task.getTaskCode());
+        variables.put("task_name", task.getTaskName());
+        variables.put("task_version_id", version.getId());
+        variables.put("run_id", run == null ? null : run.getRunId());
+        variables.put("batch_id", batch == null ? null : batch.getBatchId());
+        variables.put("trigger_type", triggerType.getCode());
+        variables.put("run_mode", runMode.getCode());
+        if (range == null) {
+            variables.put("last_watermark", "");
+            variables.put("previous_watermark", "");
+            variables.put("batch_start_value", "");
+            variables.put("batch_end_value", "");
+            variables.put("batch_start_time", batch == null || batch.getBatchStartTime() == null
+                    ? ""
+                    : batch.getBatchStartTime());
+            variables.put("batch_end_time", batch == null || batch.getBatchEndTime() == null
+                    ? ""
+                    : batch.getBatchEndTime());
+            variables.put("watermark_key", "");
+        } else {
+            variables.put("last_watermark", lastWatermarkValue(task.getId(), range));
+            variables.put("previous_watermark", previousWatermarkValue(task.getId(), range));
+            variables.put("batch_start_value", range.getStartValue());
+            variables.put("batch_end_value", range.getEndValue());
+            variables.put("batch_start_time", range.getStartTime());
+            variables.put("batch_end_time", range.getEndTime());
+            variables.put("watermark_key", range.getWatermarkKey());
+        }
+        variables.put("lookback_seconds", config == null || config.getLookbackSeconds() == null ? 0 : config.getLookbackSeconds());
+        variables.put("biz_date", LocalDate.now().toString());
+        variables.put("watermark_field", config == null || isBlank(config.getWatermarkField()) ? "" : config.getWatermarkField());
+        if (config != null) {
+            putFileVariables(variables, config, batchFiles);
+        }
+        return variables;
+    }
+
+    private void putFileVariables(
+            Map<String, Object> variables,
+            SyncIncrementalConfigEntity config,
+            List<SyncFileItemEntity> batchFiles
+    ) {
+        List<SyncFileItemEntity> files = batchFiles == null ? Collections.emptyList() : batchFiles;
+        String filePattern = isBlank(config.getFilePattern()) ? "" : config.getFilePattern();
+        variables.put("file_path", isBlank(config.getFilePath()) ? "" : config.getFilePath());
+        variables.put("file_pattern", filePattern);
+        variables.put("file_recursive", Boolean.TRUE.equals(config.getFileRecursive()));
+        variables.put("file_filter_pattern", isBlank(filePattern) ? ".*" : filePattern);
+        variables.put("batch_file_count", files.size());
+        variables.put("batch_file_relative_paths", files.stream()
+                .map(SyncFileItemEntity::getRelativePath)
+                .filter(item -> !isBlank(item))
+                .collect(Collectors.joining(",")));
+        variables.put("batch_file_names", files.stream()
+                .map(SyncFileItemEntity::getFileName)
+                .filter(item -> !isBlank(item))
+                .collect(Collectors.joining(",")));
+    }
+
+    private String lastWatermarkValue(Long taskId, WatermarkRange range) {
+        SyncWatermarkEntity watermark = syncWatermarkService.getByTaskIdAndWatermarkKey(taskId, range.getWatermarkKey());
+        if (watermark != null && !isBlank(watermark.getCurrentValue())) {
+            return watermark.getCurrentValue();
+        }
+        return range.getStartValue();
+    }
+
+    private String previousWatermarkValue(Long taskId, WatermarkRange range) {
+        SyncWatermarkEntity watermark = syncWatermarkService.getByTaskIdAndWatermarkKey(taskId, range.getWatermarkKey());
+        if (watermark != null && !isBlank(watermark.getPreviousValue())) {
+            return watermark.getPreviousValue();
+        }
+        return range.getStartValue();
+    }
+
+    private boolean isFileTask(SyncTaskEntity task, SyncIncrementalConfigEntity config) {
+        if (config == null) {
+            return task.getSourceType() == SyncSourceType.LOCAL_FILE || task.getSourceType() == SyncSourceType.FTP_FILE;
+        }
+        SyncSourceType sourceType = config.getSourceType() == null ? task.getSourceType() : config.getSourceType();
+        return sourceType == SyncSourceType.LOCAL_FILE || sourceType == SyncSourceType.FTP_FILE;
+    }
+
+    private WatermarkRange toRerunRange(SyncIncrementalConfigEntity config, SyncBatchEntity originalBatch) {
+        WatermarkRange range = new WatermarkRange();
+        range.setWatermarkKey(defaultWatermarkKey(config.getWatermarkKey()));
+        range.setValueType(valueType(config));
+        range.setBackfill(false);
+        range.setAdvanceWatermark(true);
+        range.setLookbackApplied(false);
+        range.setMaxBatchSecondsApplied(false);
+        range.setWarnings(Collections.emptyList());
+
+        switch (config.getStrategy()) {
+            case UPDATE_TIME_RANGE:
+                if (originalBatch.getBatchStartTime() == null || originalBatch.getBatchEndTime() == null) {
+                    throw new ServiceException("Original batch has no time range, batchId=" + originalBatch.getBatchId());
+                }
+                LocalDateTime startTime = toLocalDateTime(originalBatch.getBatchStartTime());
+                LocalDateTime endTime = toLocalDateTime(originalBatch.getBatchEndTime());
+                range.setStartTime(startTime);
+                range.setEndTime(endTime);
+                range.setStartValue(isBlank(originalBatch.getBatchStartValue())
+                        ? DATE_TIME_FORMATTER.format(startTime)
+                        : originalBatch.getBatchStartValue());
+                range.setEndValue(isBlank(originalBatch.getBatchEndValue())
+                        ? DATE_TIME_FORMATTER.format(endTime)
+                        : originalBatch.getBatchEndValue());
+                range.setCurrentWatermark(range.getStartValue());
+                return range;
+            case ID_RANGE:
+                if (isBlank(originalBatch.getBatchStartValue()) || isBlank(originalBatch.getBatchEndValue())) {
+                    throw new ServiceException("Original batch has no id range, batchId=" + originalBatch.getBatchId());
+                }
+                range.setStartValue(originalBatch.getBatchStartValue());
+                range.setEndValue(originalBatch.getBatchEndValue());
+                range.setCurrentWatermark(originalBatch.getBatchStartValue());
+                return range;
+            default:
+                throw unsupportedStrategy(config.getStrategy());
+        }
+    }
+
+    private LocalDateTime toLocalDateTime(Date value) {
+        return LocalDateTime.ofInstant(value.toInstant(), ZoneId.systemDefault());
+    }
+
+    private String defaultWatermarkKey(String watermarkKey) {
+        return isBlank(watermarkKey) ? SyncConstants.DEFAULT_WATERMARK_KEY : watermarkKey;
+    }
+
+    private String valueType(SyncIncrementalConfigEntity config) {
+        return config.getWatermarkFieldType() == null ? null : config.getWatermarkFieldType().getCode();
+    }
+
+    private ServiceException unsupportedStrategy(SyncIncrementalStrategy strategy) {
+        return new ServiceException("Unsupported incremental strategy: " + strategy);
+    }
+
+    private int resolveMaxFiles(SyncIncrementalConfigEntity config, Map<String, Object> params) {
+        Object requestValue = params == null ? null : params.get("maxFiles");
+        if (requestValue != null) {
+            return parsePositiveInt(requestValue, "maxFiles");
+        }
+        if (config.getMaxBatchRows() != null && config.getMaxBatchRows() > 0) {
+            return config.getMaxBatchRows() > Integer.MAX_VALUE
+                    ? Integer.MAX_VALUE
+                    : config.getMaxBatchRows().intValue();
+        }
+        return 1000;
+    }
+
+    private int parsePositiveInt(Object value, String fieldName) {
+        int parsed;
+        if (value instanceof Number) {
+            parsed = ((Number) value).intValue();
+        } else {
+            try {
+                parsed = Integer.parseInt(String.valueOf(value));
+            } catch (NumberFormatException e) {
+                throw new ServiceException("Invalid " + fieldName + ": " + value);
+            }
+        }
+        if (parsed <= 0) {
+            throw new ServiceException(fieldName + " must be positive");
+        }
+        return parsed;
+    }
+
+    private Long firstNonNull(Long value, Long defaultValue) {
+        return value == null ? defaultValue : value;
+    }
+
+    private void updateBatchStatus(SyncBatchEntity batch, SyncBatchStatus status, String errorMessage) {
+        syncBatchService.updateStatus(batch.getBatchId(), status, errorMessage);
+        batch.setStatus(status);
+        batch.setErrorMessage(errorMessage);
+    }
+
+    private void updateRunStatus(SyncRunEntity run, SyncRunStatus status, String errorMessage) {
+        syncRunService.updateStatus(run.getRunId(), status, errorMessage);
+        run.setStatus(status);
+        run.setErrorMessage(errorMessage);
+    }
+
+    private void auditStatus(
+            SyncRunEntity run,
+            SyncBatchEntity batch,
+            SyncTaskEntity task,
+            SyncAuditEventType eventType,
+            String message,
+            Object detail
+    ) {
+        syncAuditService.appendInfo(
+                run == null ? null : run.getRunId(),
+                batch == null ? null : batch.getBatchId(),
+                task.getId(),
+                task.getTaskCode(),
+                eventType,
+                message,
+                detail
+        );
+    }
+
+    private Map<String, Object> verificationDetail(VerifyResult verifyResult) {
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("sourceCount", verifyResult.getSourceCount());
+        detail.put("sinkCount", verifyResult.getSinkCount());
+        detail.put("errorCount", verifyResult.getErrorCount());
+        detail.put("checkResultCount", verifyResult.getResults() == null ? 0 : verifyResult.getResults().size());
+        return detail;
+    }
+
+    private SyncTaskEntity loadTaskByCode(String taskCode) {
+        if (isBlank(taskCode)) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "taskCode");
+        }
+        SyncTaskEntity task = syncTaskDao.queryByTaskCode(taskCode);
+        if (task == null) {
+            throw new ServiceException("Sync task not found, taskCode=" + taskCode);
+        }
+        return task;
+    }
+
+    private void validateRunnableTask(SyncTaskEntity task) {
+        if (task.getStatus() != SyncTaskStatus.PUBLISHED) {
+            throw new ServiceException("Only PUBLISHED sync task can run, taskCode=" + task.getTaskCode());
+        }
+        if (task.getClientId() == null) {
+            throw new ServiceException("Sync task clientId is required for SeaTunnel Zeta submit, taskCode="
+                    + task.getTaskCode());
+        }
+    }
+
+    private SyncTaskVersionEntity loadRunnableVersion(SyncTaskEntity task) {
+        if (task.getCurrentVersionId() == null) {
+            throw new ServiceException("Sync task currentVersionId is required, taskCode=" + task.getTaskCode());
+        }
+        SyncTaskVersionEntity version = syncTaskVersionDao.queryById(task.getCurrentVersionId());
+        if (version == null) {
+            throw new ServiceException("Sync task current version not found, versionId=" + task.getCurrentVersionId());
+        }
+        return version;
+    }
+
+    private SyncIncrementalConfigEntity loadConfig(Long taskId) {
+        SyncIncrementalConfigEntity config = syncIncrementalConfigDao.queryByTaskId(taskId);
+        if (config == null) {
+            throw new ServiceException("Sync incremental config not found, taskId=" + taskId);
+        }
+        return config;
+    }
+
+    private SyncIncrementalConfigEntity loadConfigIfIncremental(SyncTaskEntity task) {
+        if (!isIncrementalEnabled(task)) {
+            return null;
+        }
+        return loadConfig(task.getId());
+    }
+
+    private boolean isIncrementalEnabled(SyncTaskEntity task) {
+        return task.getIncrementalEnabled() == null || Boolean.TRUE.equals(task.getIncrementalEnabled());
+    }
+
+    private SyncTriggerType parseTriggerType(String value, SyncTriggerType defaultValue) {
+        if (isBlank(value)) {
+            return defaultValue;
+        }
+        try {
+            return SyncTriggerType.valueOf(value.trim().toUpperCase());
+        } catch (Exception e) {
+            throw new ServiceException("Unsupported triggerType: " + value);
+        }
+    }
+
+    private SyncRunMode parseRunMode(String value, SyncRunMode defaultValue) {
+        if (isBlank(value)) {
+            return defaultValue;
+        }
+        try {
+            return SyncRunMode.valueOf(value.trim().toUpperCase());
+        } catch (Exception e) {
+            throw new ServiceException("Unsupported runMode: " + value);
+        }
+    }
+
+    private String generateRunId(String taskCode) {
+        return taskCode
+                + "_run_"
+                + ID_TIME_FORMATTER.format(LocalDateTime.now())
+                + "_"
+                + String.format("%06d", RANDOM.nextInt(1_000_000));
+    }
+
+    private String buildSeatunnelJobName(SyncTaskEntity task, SyncRunEntity run) {
+        return task.getTaskCode() + "_" + run.getRunId();
+    }
+
+    private RunResultVO toRunResult(
+            SyncTaskEntity task,
+            SyncTaskVersionEntity version,
+            SyncBatchEntity batch,
+            SyncRunEntity run,
+            boolean watermarkAdvanced
+    ) {
+        RunResultVO result = new RunResultVO();
+        result.setRunId(run.getRunId());
+        result.setBatchId(batch.getBatchId());
+        result.setTaskId(task.getId());
+        result.setTaskCode(task.getTaskCode());
+        result.setTaskVersionId(version.getId());
+        result.setSeatunnelJobId(run.getSeatunnelJobId());
+        result.setSeatunnelJobName(run.getSeatunnelJobName());
+        result.setRunStatus(run.getStatus() == null ? null : run.getStatus().getCode());
+        result.setBatchStatus(batch.getStatus() == null ? null : batch.getStatus().getCode());
+        result.setWatermarkAdvanced(watermarkAdvanced);
+        result.setErrorMessage(run.getErrorMessage());
+        return result;
+    }
+
+    private SyncAuditItemVO toAuditVO(SyncAuditEntity audit) {
+        SyncAuditItemVO vo = new SyncAuditItemVO();
+        vo.setId(audit.getId());
+        vo.setRunId(audit.getRunId());
+        vo.setBatchId(audit.getBatchId());
+        vo.setTaskId(audit.getTaskId());
+        vo.setTaskCode(audit.getTaskCode());
+        vo.setEventType(audit.getEventType() == null ? null : audit.getEventType().getCode());
+        vo.setEventLevel(audit.getEventLevel() == null ? null : audit.getEventLevel().getCode());
+        vo.setEventMessage(audit.getEventMessage());
+        vo.setDetailJson(audit.getDetailJson());
+        vo.setCreateTime(formatDate(audit.getCreateTime()));
+        return vo;
+    }
+
+    private WatermarkVO toWatermarkVO(SyncTaskEntity task, SyncWatermarkEntity watermark) {
+        WatermarkVO vo = new WatermarkVO();
+        vo.setId(watermark.getId());
+        vo.setTaskId(watermark.getTaskId());
+        vo.setTaskCode(task.getTaskCode());
+        vo.setWatermarkKey(watermark.getWatermarkKey());
+        vo.setCurrentValue(watermark.getCurrentValue());
+        vo.setPreviousValue(watermark.getPreviousValue());
+        vo.setCurrentValueType(watermark.getCurrentValueType() == null
+                ? null
+                : watermark.getCurrentValueType().getCode());
+        vo.setLastSuccessRunId(watermark.getLastSuccessRunId());
+        vo.setLastSuccessBatchId(watermark.getLastSuccessBatchId());
+        vo.setUpdateTime(formatDate(watermark.getUpdateTime()));
+        return vo;
+    }
+
+    private String formatDate(Date date) {
+        if (date == null) {
+            return null;
+        }
+        return DATE_TIME_FORMATTER.format(
+                LocalDateTime.ofInstant(date.toInstant(), ZoneId.systemDefault())
+        );
+    }
+
+    private Map<String, Object> nullToEmpty(Map<String, Object> value) {
+        return value == null ? Map.of() : value;
+    }
+
+    private void putIfNotBlank(Map<String, Object> params, String key, String value) {
+        if (!isBlank(value)) {
+            params.put(key, value);
+        }
+    }
+}

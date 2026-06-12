@@ -1,0 +1,99 @@
+.sync-test-console {
+  min-height: calc(100vh - 56px);
+  padding: 20px;
+  background:
+    radial-gradient(circle at 8% 10%, rgba(14, 165, 233, 0.1), transparent 28%),
+    radial-gradient(circle at 90% 0%, rgba(16, 185, 129, 0.12), transparent 26%),
+    #f6f8fb;
+
+  .console-hero {
+    margin-bottom: 16px;
+    padding: 22px 24px;
+    overflow: hidden;
+    background: linear-gradient(135deg, #0f172a 0%, #134e4a 52%, #0f766e 100%);
+    border-radius: 22px;
+    box-shadow: 0 16px 38px rgba(15, 23, 42, 0.16);
+
+    h1,
+    p {
+      margin: 0;
+      color: #fff;
+    }
+
+    h1 {
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+    }
+
+    p {
+      max-width: 980px;
+      margin-top: 8px;
+      color: rgba(255, 255, 255, 0.76);
+      line-height: 1.8;
+    }
+  }
+
+  .task-bar {
+    margin-bottom: 16px;
+    border-radius: 18px;
+    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+  }
+
+  .main-card {
+    border-radius: 20px;
+    box-shadow: 0 12px 32px rgba(15, 23, 42, 0.06);
+
+    .ant-tabs-nav {
+      margin-bottom: 18px;
+    }
+  }
+
+  .section-card {
+    margin-bottom: 16px;
+    border-radius: 16px;
+  }
+
+  .code-block {
+    max-height: 380px;
+    padding: 12px;
+    overflow: auto;
+    color: #d1fae5;
+    font-size: 12px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: #0f172a;
+    border-radius: 12px;
+  }
+
+  .json-editor {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+      'Courier New', monospace;
+  }
+
+  .result-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 12px;
+  }
+
+  .result-card {
+    padding: 12px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+
+    .label {
+      margin-bottom: 4px;
+      color: #64748b;
+      font-size: 12px;
+    }
+
+    .value {
+      color: #0f172a;
+      font-weight: 600;
+      word-break: break-word;
+    }
+  }
+}
