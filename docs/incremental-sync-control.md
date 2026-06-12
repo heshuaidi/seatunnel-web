@@ -1117,6 +1117,12 @@ docs/generic-jdbc-starrocks-incremental-test.md
 
 前端第一版提供单页面“增量同步测试台”，用于手动测试 JDBC / SQL / Oracle / StarRocks 增量 Batch source 管理闭环。
 
+完整操作说明见：
+
+```text
+docs/sync-control-test-console-user-guide.md
+```
+
 菜单：
 
 ```text
@@ -1144,6 +1150,13 @@ Tab 能力：
 - `Audits`：查询 run audits 或 batch audits，支持展开 `detailJson`。
 
 前端请求使用项目现有 `HttpUtils` 封装，不新增 UI 框架。params JSON 输入会先做 `JSON.parse` 校验；错误时提示“JSON 格式错误”。
+
+本轮前端滚动修复：
+
+- `/sync-control/test-console` 参考 `/metrics` 的页面内滚动方式，在测试台根容器内建立独立滚动层。
+- 根容器只占满 ProLayout 内容区，不修改全局 `body` 样式，也不影响 `/metrics` 等其他页面。
+- 内容超过屏幕高度时由测试台自己的滚动层滚动，底部保留 padding，避免最后一个 Tab 内容被裁剪。
+- Watermark、Checks 诊断和 Audits 等宽表补充横向滚动，避免表格撑坏页面。
 
 常见定位路径：
 
