@@ -10,6 +10,7 @@ import org.apache.seatunnel.web.spi.enums.Status;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -50,32 +51,54 @@ public class SyncZetaClientImpl implements SyncZetaClient {
     @Override
     public SyncJobStatusResult getJobStatus(Long clientId, String jobId) {
         Long engineJobId = parseJobId(jobId);
-        Map response = seaTunnelRestClient.jobInfo(clientId, engineJobId);
-
-        String status = firstNonBlank(
-                findString(response, "jobStatus"),
-                findString(response, "status"),
-                findString(response, "state")
-        );
-
         SyncJobStatusResult result = new SyncJobStatusResult();
         result.setJobId(jobId);
-        result.setStatus(status);
-        result.setRawResponse(toStringObjectMap(response));
-        result.setErrorMessage(firstNonBlank(
-                findString(response, "errorMsg"),
-                findString(response, "errorMessage"),
-                findString(response, "exception")
-        ));
 
-        String normalized = status == null ? "" : status.toUpperCase(Locale.ROOT);
-        result.setSuccess("FINISHED".equals(normalized) || "SUCCESS".equals(normalized));
-        result.setEndState(result.isSuccess()
-                || "FAILED".equals(normalized)
-                || "CANCELED".equals(normalized)
-                || "CANCELLED".equals(normalized)
-                || "UNKNOWABLE".equals(normalized));
+        Map<String, Object> raw = new LinkedHashMap<>();
+        try {
+            Map response = seaTunnelRestClient.jobInfo(clientId, engineJobId);
+            raw.put("jobInfo", toStringObjectMap(response));
+            applyJobInfo(result, response);
+            if (!isBlank(result.getStatus())) {
+                result.setRawResponse(raw);
+                markTerminalFlags(result);
+                return result;
+            }
+        } catch (Exception e) {
+            raw.put("jobInfoError", errorMessage(e));
+            result.setErrorMessage(errorMessage(e));
+        }
 
+        try {
+            List running = seaTunnelRestClient.runningJobs(clientId);
+            raw.put("runningJobsChecked", true);
+            if (containsJob(running, engineJobId)) {
+                result.setStatus("RUNNING");
+                result.setRawResponse(raw);
+                markTerminalFlags(result);
+                return result;
+            }
+        } catch (Exception e) {
+            raw.put("runningJobsError", errorMessage(e));
+        }
+
+        for (String finishedState : new String[] {"FINISHED", "FAILED", "CANCELED", "CANCELLED", "UNKNOWABLE"}) {
+            try {
+                List finished = seaTunnelRestClient.finishedJobs(clientId, finishedState);
+                raw.put("finishedJobs_" + finishedState + "_checked", true);
+                if (containsJob(finished, engineJobId)) {
+                    result.setStatus(finishedState);
+                    result.setRawResponse(raw);
+                    markTerminalFlags(result);
+                    return result;
+                }
+            } catch (Exception e) {
+                raw.put("finishedJobs_" + finishedState + "_error", errorMessage(e));
+            }
+        }
+
+        result.setRawResponse(raw);
+        markTerminalFlags(result);
         return result;
     }
 
@@ -117,12 +140,141 @@ public class SyncZetaClientImpl implements SyncZetaClient {
         }
     }
 
+    private void applyJobInfo(SyncJobStatusResult result, Map response) {
+        String status = firstNonBlank(
+                findString(response, "jobStatus"),
+                findString(response, "status"),
+                findString(response, "state")
+        );
+        result.setStatus(status);
+        result.setErrorMessage(firstNonBlank(
+                findString(response, "errorMsg"),
+                findString(response, "errorMessage"),
+                findString(response, "exception")
+        ));
+        result.setSourceCount(findLong(response,
+                "sourceCount",
+                "source_count",
+                "sourceRows",
+                "sourceRowCount",
+                "readRowCount",
+                "readRows"));
+        result.setSinkCount(findLong(response,
+                "sinkCount",
+                "sink_count",
+                "sinkRows",
+                "sinkRowCount",
+                "writeRowCount",
+                "writtenRows"));
+        result.setErrorCount(findLong(response,
+                "errorCount",
+                "error_count",
+                "failedCount",
+                "errorRows",
+                "dirtyCount"));
+    }
+
+    private void markTerminalFlags(SyncJobStatusResult result) {
+        String normalized = normalizeStatus(result.getStatus());
+        result.setSuccess("FINISHED".equals(normalized) || "SUCCESS".equals(normalized));
+        result.setEndState(result.isSuccess()
+                || "FAILED".equals(normalized)
+                || "CANCELED".equals(normalized)
+                || "CANCELLED".equals(normalized)
+                || "UNKNOWABLE".equals(normalized)
+                || "TIMEOUT".equals(normalized));
+    }
+
+    private boolean containsJob(List list, Long jobId) {
+        if (list == null || list.isEmpty() || jobId == null) {
+            return false;
+        }
+        for (Object item : list) {
+            Long itemJobId = null;
+            if (item instanceof Map) {
+                Map map = (Map) item;
+                itemJobId = firstNonNullLong(
+                        findLong(map, "jobId", "job_id", "id"),
+                        findLong(map, "jobID", "job_id", "jobIdString")
+                );
+            } else {
+                itemJobId = toLong(item);
+            }
+            if (jobId.equals(itemJobId)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private String findString(Map response, String key) {
         if (response == null || key == null) {
             return null;
         }
         Object value = response.get(key);
+        if (value == null) {
+            Object data = response.get("data");
+            if (data instanceof Map) {
+                value = ((Map) data).get(key);
+            }
+        }
         return value == null ? null : String.valueOf(value);
+    }
+
+    private Long findLong(Map response, String... keys) {
+        if (response == null || keys == null) {
+            return null;
+        }
+        for (String key : keys) {
+            Long value = toLong(response.get(key));
+            if (value != null) {
+                return value;
+            }
+        }
+
+        Object data = response.get("data");
+        if (data instanceof Map) {
+            Long value = findLong((Map) data, keys);
+            if (value != null) {
+                return value;
+            }
+        }
+
+        Object metrics = response.get("metrics");
+        if (metrics instanceof Map) {
+            return findLong((Map) metrics, keys);
+        }
+        return null;
+    }
+
+    private Long firstNonNullLong(Long first, Long second) {
+        return first == null ? second : first;
+    }
+
+    private Long toLong(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number) {
+            return ((Number) value).longValue();
+        }
+        try {
+            return Long.parseLong(String.valueOf(value).trim());
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private String normalizeStatus(String status) {
+        return status == null ? "" : status.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
+    }
+
+    private String errorMessage(Exception e) {
+        return e.getMessage() == null ? e.toString() : e.getMessage();
     }
 
     private String firstNonBlank(String... values) {

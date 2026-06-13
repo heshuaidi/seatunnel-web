@@ -248,10 +248,20 @@ const ActionColumn: React.FC<ActionColumnProps> = ({
       cancelText: '取消',
       onOk: async () => {
         const response = (await batchLinkUpIncrementalApi.run(record.id, {
-          waitForFinish: false,
+          waitForFinish: true,
         })) as any;
         if (response?.code === 0) {
-          message.success('手动增量运行已提交');
+          const result = response?.data || {};
+          Modal.info({
+            title: '手动增量运行结果',
+            centered: true,
+            width: 720,
+            content: (
+              <pre className="max-h-[420px] overflow-auto rounded-md border border-slate-200 bg-slate-950 p-3 text-xs leading-5 text-slate-100">
+                {JSON.stringify(result, null, 2)}
+              </pre>
+            ),
+          });
           cbk();
           return;
         }

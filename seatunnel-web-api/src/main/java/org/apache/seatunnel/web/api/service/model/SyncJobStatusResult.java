@@ -17,5 +17,11 @@ public class SyncJobStatusResult {
 
     private String errorMessage;
 
+    private Long sourceCount;
+
+    private Long sinkCount;
+
+    private Long errorCount;
+
     private Map<String, Object> rawResponse;
 }

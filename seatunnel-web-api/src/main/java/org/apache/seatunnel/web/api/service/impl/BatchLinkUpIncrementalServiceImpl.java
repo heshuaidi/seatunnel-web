@@ -328,17 +328,26 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
             updateBatchStatus(batch, SyncBatchStatus.SUBMITTED, null);
             updateRunStatus(run, SyncRunStatus.SUBMITTED, null);
             if (!waitForFinish) {
-                return toRunResult(task, version, batch, run, false);
+                return toRunResult(task, version, batch, run, null, false, null, null);
             }
 
             updateBatchStatus(batch, SyncBatchStatus.RUNNING, null);
             updateRunStatus(run, SyncRunStatus.RUNNING, null);
             SyncJobStatusResult finalStatus = pollUntilFinished(task, batch, run);
             if (!finalStatus.isSuccess()) {
-                throw new ServiceException("SeaTunnel job failed: " + finalStatus.getStatus()
-                        + (isBlank(finalStatus.getErrorMessage()) ? "" : ", " + finalStatus.getErrorMessage()));
+                String terminalError = terminalErrorMessage(finalStatus);
+                SyncRunStatus terminalRunStatus = toRunStatus(finalStatus);
+                SyncBatchStatus terminalBatchStatus = toBatchStatus(finalStatus);
+                updateBatchStatus(batch, terminalBatchStatus, terminalError);
+                updateRunStatus(run, terminalRunStatus, terminalError);
+                recordWatermarkNotAdvanced(task, batch, run, "job not success");
+                syncAuditService.appendError(runId, batchId, task.getId(), task.getTaskCode(),
+                        SyncAuditEventType.RUN_FAILED, "Batch-link-up incremental job finished unsuccessfully",
+                        finalStatus.getRawResponse());
+                return toRunResult(task, version, batch, run, finalStatus, false, null, terminalError);
             }
 
+            applyJobMetrics(batch, run, finalStatus);
             updateBatchStatus(batch, SyncBatchStatus.VERIFYING, null);
             syncAuditService.appendInfo(runId, batchId, task.getId(), task.getTaskCode(),
                     SyncAuditEventType.VERIFYING, "SeaTunnel job success, start incremental check",
@@ -364,16 +373,23 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
                         SyncAuditEventType.VERIFYING, "Incremental check disabled, skip verification", null);
             }
 
-            boolean watermarkAdvanced = advanceWatermarkIfNeeded(task, config, batch, run, context.variables);
             updateBatchStatus(batch, SyncBatchStatus.SUCCESS, null);
             updateRunStatus(run, SyncRunStatus.SUCCESS, null);
+            WatermarkAdvanceResult watermarkResult =
+                    advanceWatermarkIfNeeded(task, config, batch, run, context.variables);
             syncAuditService.appendInfo(runId, batchId, task.getId(), task.getTaskCode(),
                     SyncAuditEventType.RUN_SUCCESS, "Batch-link-up incremental run success",
-                    Map.of("watermarkAdvanced", watermarkAdvanced));
-            RunResultVO result = toRunResult(task, version, batch, run, watermarkAdvanced);
-            result.setRunStatus(SyncRunStatus.SUCCESS.getCode());
-            result.setBatchStatus(SyncBatchStatus.SUCCESS.getCode());
-            return result;
+                    Map.of("watermarkAdvanced", watermarkResult.updated));
+            return toRunResult(
+                    task,
+                    version,
+                    batch,
+                    run,
+                    finalStatus,
+                    watermarkResult.updated,
+                    watermarkResult.value,
+                    watermarkResult.errorMessage
+            );
         } catch (Exception e) {
             String message = e.getMessage() == null ? e.toString() : e.getMessage();
             log.error("Batch-link-up incremental run failed, taskId={}, batchId={}, runId={}",
@@ -987,7 +1003,7 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         batch.setBatchEndTime(toDate(context.variables.get("batch_end_time")));
     }
 
-    private boolean advanceWatermarkIfNeeded(
+    private WatermarkAdvanceResult advanceWatermarkIfNeeded(
             SyncTaskEntity task,
             SyncIncrementalConfigEntity config,
             SyncBatchEntity batch,
@@ -995,29 +1011,44 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
             Map<String, Object> variables
     ) {
         if (!Boolean.TRUE.equals(config.getSuccessUpdateWatermark())) {
-            syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
-                    SyncAuditEventType.ADVANCE_WATERMARK, "Watermark advance disabled by config", null);
-            return false;
+            String message = "Watermark not advanced: successUpdateWatermark=false";
+            log.warn("{}, taskId={}, batchId={}, runId={}", message, task.getId(), batch.getBatchId(), run.getRunId());
+            syncAuditService.appendWarn(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.ADVANCE_WATERMARK, message, null);
+            return WatermarkAdvanceResult.skipped(message);
         }
         String newValue = firstNonBlank(
                 valueToString(variables.get("batch_end_value")),
                 valueToString(variables.get("batch_end_time"))
         );
         if (isBlank(newValue)) {
-            throw new ServiceException("success_update_watermark=true requires batch_end_value or batch_end_time");
+            String message = "Watermark not advanced: batch_end_value is null";
+            log.error("{}, taskId={}, batchId={}, runId={}", message, task.getId(), batch.getBatchId(), run.getRunId());
+            syncAuditService.appendError(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.ADVANCE_WATERMARK, message, null);
+            return WatermarkAdvanceResult.failed(message);
         }
-        syncWatermarkService.advanceWatermark(
-                task.getId(),
-                defaultWatermarkKey(config.getWatermarkKey()),
-                newValue,
-                run.getId(),
-                batch.getBatchId()
-        );
+        try {
+            syncWatermarkService.advanceWatermark(
+                    task.getId(),
+                    defaultWatermarkKey(config.getWatermarkKey()),
+                    newValue,
+                    run.getId(),
+                    batch.getBatchId()
+            );
+        } catch (Exception e) {
+            String message = "Watermark not advanced: insert/update failed";
+            String error = e.getMessage() == null ? e.toString() : e.getMessage();
+            log.error("{}, taskId={}, batchId={}, runId={}", message, task.getId(), batch.getBatchId(), run.getRunId(), e);
+            syncAuditService.appendError(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                    SyncAuditEventType.ADVANCE_WATERMARK, message, Map.of("errorMessage", error));
+            return WatermarkAdvanceResult.failed(message + ", " + error);
+        }
         syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
                 SyncAuditEventType.ADVANCE_WATERMARK,
                 "Watermark advanced after successful batch-link-up incremental run",
                 Map.of("newValue", newValue, "watermarkKey", defaultWatermarkKey(config.getWatermarkKey())));
-        return true;
+        return WatermarkAdvanceResult.updated(newValue);
     }
 
     private SyncJobStatusResult pollUntilFinished(SyncTaskEntity task, SyncBatchEntity batch, SyncRunEntity run)
@@ -1033,8 +1064,90 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
             }
             Thread.sleep(syncRunProperties.getPollIntervalMs());
         }
-        throw new ServiceException("SeaTunnel job poll timeout, jobId=" + run.getSeatunnelJobId()
+        SyncJobStatusResult timeout = new SyncJobStatusResult();
+        timeout.setJobId(run.getSeatunnelJobId());
+        timeout.setStatus("TIMEOUT");
+        timeout.setEndState(true);
+        timeout.setSuccess(false);
+        timeout.setErrorMessage("SeaTunnel job poll timeout, jobId=" + run.getSeatunnelJobId()
                 + ", lastStatus=" + (latest == null ? null : latest.getStatus()));
+        Map<String, Object> timeoutRaw = new LinkedHashMap<>();
+        timeoutRaw.put("lastStatus", latest == null ? null : latest.getStatus());
+        timeoutRaw.put("pollTimeoutMs", syncRunProperties.getPollTimeoutMs());
+        timeout.setRawResponse(timeoutRaw);
+        return timeout;
+    }
+
+    private void recordWatermarkNotAdvanced(
+            SyncTaskEntity task,
+            SyncBatchEntity batch,
+            SyncRunEntity run,
+            String reason
+    ) {
+        String message = "Watermark not advanced: " + reason;
+        log.warn("{}, taskId={}, batchId={}, runId={}", message, task.getId(), batch.getBatchId(), run.getRunId());
+        syncAuditService.appendWarn(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
+                SyncAuditEventType.ADVANCE_WATERMARK, message, null);
+    }
+
+    private void applyJobMetrics(SyncBatchEntity batch, SyncRunEntity run, SyncJobStatusResult status) {
+        Long sourceCount = zeroIfNull(status.getSourceCount());
+        Long sinkCount = zeroIfNull(status.getSinkCount());
+        Long errorCount = zeroIfNull(status.getErrorCount());
+        syncBatchService.updateMetrics(batch.getBatchId(), sourceCount, sinkCount, errorCount);
+        syncRunService.updateMetrics(run.getRunId(), sourceCount, sinkCount, errorCount);
+        batch.setSourceCount(sourceCount);
+        batch.setSinkCount(sinkCount);
+        batch.setErrorCount(errorCount);
+        run.setSourceCount(sourceCount);
+        run.setSinkCount(sinkCount);
+        run.setErrorCount(errorCount);
+    }
+
+    private Long zeroIfNull(Long value) {
+        return value == null ? 0L : value;
+    }
+
+    private SyncRunStatus toRunStatus(SyncJobStatusResult status) {
+        String normalized = normalizeJobStatus(status);
+        if ("FINISHED".equals(normalized) || "SUCCESS".equals(normalized)) {
+            return SyncRunStatus.SUCCESS;
+        }
+        if ("CANCELED".equals(normalized) || "CANCELLED".equals(normalized)) {
+            return SyncRunStatus.CANCELED;
+        }
+        return SyncRunStatus.FAILED;
+    }
+
+    private SyncBatchStatus toBatchStatus(SyncJobStatusResult status) {
+        String normalized = normalizeJobStatus(status);
+        if ("FINISHED".equals(normalized) || "SUCCESS".equals(normalized)) {
+            return SyncBatchStatus.SUCCESS;
+        }
+        if ("CANCELED".equals(normalized) || "CANCELLED".equals(normalized)) {
+            return SyncBatchStatus.CANCELED;
+        }
+        return SyncBatchStatus.FAILED;
+    }
+
+    private String terminalErrorMessage(SyncJobStatusResult status) {
+        String normalized = normalizeJobStatus(status);
+        String message = firstNonBlank(status.getErrorMessage(), "SeaTunnel job terminal status: " + normalized);
+        if ("TIMEOUT".equals(normalized)) {
+            return message;
+        }
+        if ("CANCELED".equals(normalized) || "CANCELLED".equals(normalized)) {
+            return "SeaTunnel job canceled: " + status.getStatus()
+                    + (isBlank(status.getErrorMessage()) ? "" : ", " + status.getErrorMessage());
+        }
+        return "SeaTunnel job failed: " + status.getStatus()
+                + (isBlank(status.getErrorMessage()) ? "" : ", " + status.getErrorMessage());
+    }
+
+    private String normalizeJobStatus(SyncJobStatusResult status) {
+        return status == null || status.getStatus() == null
+                ? ""
+                : status.getStatus().trim().toUpperCase(Locale.ROOT);
     }
 
     private void updateBatchStatus(SyncBatchEntity batch, SyncBatchStatus status, String errorMessage) {
@@ -1346,7 +1459,10 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
             SyncTaskVersionEntity version,
             SyncBatchEntity batch,
             SyncRunEntity run,
-            boolean watermarkAdvanced
+            SyncJobStatusResult jobStatus,
+            boolean watermarkAdvanced,
+            String watermarkValue,
+            String errorMessage
     ) {
         RunResultVO result = new RunResultVO();
         result.setRunId(run.getRunId());
@@ -1356,10 +1472,17 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         result.setTaskVersionId(version.getId());
         result.setSeatunnelJobId(run.getSeatunnelJobId());
         result.setSeatunnelJobName(run.getSeatunnelJobName());
+        result.setJobStatus(jobStatus == null ? null : jobStatus.getStatus());
+        result.setStatus(code(run.getStatus()));
         result.setRunStatus(code(run.getStatus()));
         result.setBatchStatus(code(batch.getStatus()));
+        result.setSourceCount(run.getSourceCount());
+        result.setSinkCount(run.getSinkCount());
+        result.setErrorCount(run.getErrorCount());
+        result.setWatermarkUpdated(watermarkAdvanced);
         result.setWatermarkAdvanced(watermarkAdvanced);
-        result.setErrorMessage(run.getErrorMessage());
+        result.setWatermarkValue(watermarkValue);
+        result.setErrorMessage(firstNonBlank(errorMessage, run.getErrorMessage()));
         return result;
     }
 
@@ -1593,6 +1716,30 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
     private static class IncrementalContext {
         private BatchLinkUpIncrementalContextVO vo;
         private Map<String, Object> variables;
+    }
+
+    private static class WatermarkAdvanceResult {
+        private boolean updated;
+        private String value;
+        private String errorMessage;
+
+        private static WatermarkAdvanceResult updated(String value) {
+            WatermarkAdvanceResult result = new WatermarkAdvanceResult();
+            result.updated = true;
+            result.value = value;
+            return result;
+        }
+
+        private static WatermarkAdvanceResult skipped(String errorMessage) {
+            WatermarkAdvanceResult result = new WatermarkAdvanceResult();
+            result.updated = false;
+            result.errorMessage = errorMessage;
+            return result;
+        }
+
+        private static WatermarkAdvanceResult failed(String errorMessage) {
+            return skipped(errorMessage);
+        }
     }
 
     private static class QueryResult {
