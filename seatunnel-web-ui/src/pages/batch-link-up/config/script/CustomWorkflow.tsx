@@ -1,15 +1,21 @@
-import { ArrowLeftOutlined, SendOutlined } from "@ant-design/icons";
-import { Button, Popconfirm, Popover, Space, Tooltip } from "antd";
-import { DatabaseZap, Eye, FileCode2, PlayCircle, RefreshCw } from "lucide-react";
-import React, { useState } from "react";
+import { ArrowLeftOutlined, SendOutlined } from '@ant-design/icons';
+import { Button, Popconfirm, Popover, Space, Tooltip } from 'antd';
+import {
+  DatabaseZap,
+  Eye,
+  FileCode2,
+  PlayCircle,
+  RefreshCw,
+} from 'lucide-react';
+import React, { useState } from 'react';
 
-import type { EnvConfig } from "../../workflow/components/ScheduleConfigContent/types";
-import CodeBlockWithCopy from "../../workflow/operator/CodeBlockWithCopy";
-import RightConfigPanel from "../../workflow/RightConfigPanel";
-import { useResizablePanel } from "../multi/hooks/useResizablePanel";
-import HoconEditorPanel from "./HoconEditorPanel";
-import IncrementalControlDrawer from "./IncrementalControlDrawer";
-import { useCustomWorkflowState } from "./hooks/useCustomWorkflowState";
+import type { EnvConfig } from '../../workflow/components/ScheduleConfigContent/types';
+import CodeBlockWithCopy from '../../workflow/operator/CodeBlockWithCopy';
+import RightConfigPanel from '../../workflow/RightConfigPanel';
+import { useResizablePanel } from '../multi/hooks/useResizablePanel';
+import HoconEditorPanel from './HoconEditorPanel';
+import IncrementalControlDrawer from './IncrementalControlDrawer';
+import { useCustomWorkflowState } from './hooks/useCustomWorkflowState';
 
 interface CustomWorkflowProps {
   params: any;
@@ -21,6 +27,7 @@ interface CustomWorkflowProps {
   setScheduleConfig: React.Dispatch<React.SetStateAction<any>>;
   envConfig: EnvConfig;
   setEnvConfig: React.Dispatch<React.SetStateAction<EnvConfig>>;
+  scene?: string | null;
 }
 
 export default function CustomWorkflow({
@@ -33,10 +40,11 @@ export default function CustomWorkflow({
   setScheduleConfig,
   envConfig,
   setEnvConfig,
+  scene,
 }: CustomWorkflowProps) {
   const { rightWidth, handleResizeStart } = useResizablePanel(520);
   const [incrementalOpen, setIncrementalOpen] = useState(false);
-  const [insertText, setInsertText] = useState("");
+  const [insertText, setInsertText] = useState('');
 
   const {
     activeTab,
@@ -68,10 +76,10 @@ export default function CustomWorkflow({
   });
 
   const actionButtonClass =
-    "!inline-flex !h-[34px] !items-center !justify-center !rounded-full !border !border-slate-200 !bg-slate-50 !px-3.5 !text-[13px] !font-medium !text-slate-500 transition-colors duration-200 hover:!border-slate-300 hover:!bg-white/80 hover:!text-slate-700 hover:!shadow-[0_4px_12px_rgba(15,23,42,0.05)] disabled:!cursor-not-allowed disabled:!border-slate-200 disabled:!bg-slate-100 disabled:!text-slate-400 disabled:!shadow-none";
+    '!inline-flex !h-[34px] !items-center !justify-center !rounded-full !border !border-slate-200 !bg-slate-50 !px-3.5 !text-[13px] !font-medium !text-slate-500 transition-colors duration-200 hover:!border-slate-300 hover:!bg-white/80 hover:!text-slate-700 hover:!shadow-[0_4px_12px_rgba(15,23,42,0.05)] disabled:!cursor-not-allowed disabled:!border-slate-200 disabled:!bg-slate-100 disabled:!text-slate-400 disabled:!shadow-none';
 
   const actionChipClass =
-    "inline-flex h-[34px] cursor-pointer select-none items-center justify-center rounded-full border border-slate-200 bg-slate-50 px-3.5 text-[13px] font-medium leading-none text-slate-500 transition-colors duration-200 hover:border-slate-300 hover:bg-white/80 hover:text-slate-700 hover:shadow-[0_4px_12px_rgba(15,23,42,0.05)] active:translate-y-0";
+    'inline-flex h-[34px] cursor-pointer select-none items-center justify-center rounded-full border border-slate-200 bg-slate-50 px-3.5 text-[13px] font-medium leading-none text-slate-500 transition-colors duration-200 hover:border-slate-300 hover:bg-white/80 hover:text-slate-700 hover:shadow-[0_4px_12px_rgba(15,23,42,0.05)] active:translate-y-0';
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-white">
@@ -176,7 +184,7 @@ export default function CustomWorkflow({
                         <Eye
                           size={15}
                           strokeWidth={1.9}
-                          className={previewLoading ? "animate-spin" : ""}
+                          className={previewLoading ? 'animate-spin' : ''}
                         />
                         <span className="ml-1">预览</span>
                       </button>
@@ -191,14 +199,11 @@ export default function CustomWorkflow({
                         placement="bottomRight"
                         onConfirm={handleReloadTemplate}
                       >
-                        <button
-                          type="button"
-                          className={actionChipClass}
-                        >
+                        <button type="button" className={actionChipClass}>
                           <RefreshCw
                             size={15}
                             strokeWidth={1.9}
-                            className={templateLoading ? "animate-spin" : ""}
+                            className={templateLoading ? 'animate-spin' : ''}
                           />
                           <span className="ml-1">模板</span>
                         </button>
@@ -212,7 +217,7 @@ export default function CustomWorkflow({
                         <RefreshCw
                           size={15}
                           strokeWidth={1.9}
-                          className={templateLoading ? "animate-spin" : ""}
+                          className={templateLoading ? 'animate-spin' : ''}
                         />
                         <span className="ml-1">模板</span>
                       </button>
@@ -226,7 +231,7 @@ export default function CustomWorkflow({
                       value={hoconContent}
                       onChange={setHoconContent}
                       insertText={insertText}
-                      onInserted={() => setInsertText("")}
+                      onInserted={() => setInsertText('')}
                     />
                   </div>
                 </div>
@@ -271,6 +276,8 @@ export default function CustomWorkflow({
         open={incrementalOpen}
         onClose={() => setIncrementalOpen(false)}
         onInsertPlaceholder={setInsertText}
+        scene={scene}
+        releaseState={params?.releaseState}
       />
     </div>
   );

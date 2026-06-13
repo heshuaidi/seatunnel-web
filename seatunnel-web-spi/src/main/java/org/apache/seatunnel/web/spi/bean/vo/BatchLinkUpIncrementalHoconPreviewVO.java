@@ -13,9 +13,15 @@ public class BatchLinkUpIncrementalHoconPreviewVO {
 
     private String renderedHocon;
 
+    private BatchLinkUpIncrementalContextVO context;
+
     private Map<String, Object> variables;
 
+    private List<BatchLinkUpIncrementalContextVO.SqlExecutionVO> executedSqls = new ArrayList<>();
+
     private List<String> missingVariables = new ArrayList<>();
+
+    private List<String> diagnostics = new ArrayList<>();
 
     private List<String> warnings = new ArrayList<>();
 }

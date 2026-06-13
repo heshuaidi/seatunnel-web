@@ -212,6 +212,15 @@ export const batchJobInstanceApi = {
 
 const batchLinkUpIncrementalPrefix = "/api/v1/batch-link-up/tasks";
 
+export interface BatchLinkUpIncrementalSqlTestPayload {
+  datasourceId?: string | number;
+  sql: string;
+  sqlType?: string;
+  fieldName?: string;
+  params?: Record<string, any>;
+  scalar?: boolean;
+}
+
 export const batchLinkUpIncrementalApi = {
   getConfig: (taskId: string | number) => {
     return HttpUtils.get(`${batchLinkUpIncrementalPrefix}/${taskId}/incremental-config`);
@@ -263,7 +272,7 @@ export const batchLinkUpIncrementalApi = {
     return HttpUtils.put(`${batchLinkUpIncrementalPrefix}/${taskId}/watermark`, data);
   },
 
-  testSql: (taskId: string | number, data: any) => {
+  testSql: (taskId: string | number, data: BatchLinkUpIncrementalSqlTestPayload) => {
     return HttpUtils.post(`${batchLinkUpIncrementalPrefix}/${taskId}/test-incremental-sql`, data);
   },
 };

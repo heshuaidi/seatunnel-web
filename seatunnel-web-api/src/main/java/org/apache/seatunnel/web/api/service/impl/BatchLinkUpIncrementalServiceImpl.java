@@ -41,6 +41,7 @@ import org.apache.seatunnel.web.common.utils.JSONUtils;
 import org.apache.seatunnel.web.core.exceptions.ServiceException;
 import org.apache.seatunnel.web.core.hocon.JobDefinitionCommandResolver;
 import org.apache.seatunnel.web.core.hocon.JobDefinitionHoconBuilder;
+import org.apache.seatunnel.web.core.time.TimeVariableJdbcSqlRenderService;
 import org.apache.seatunnel.web.dao.entity.DataSource;
 import org.apache.seatunnel.web.dao.entity.JobDefinitionContentEntity;
 import org.apache.seatunnel.web.dao.entity.JobDefinitionEntity;
@@ -58,7 +59,9 @@ import org.apache.seatunnel.web.spi.bean.dto.BatchLinkUpIncrementalPreviewReques
 import org.apache.seatunnel.web.spi.bean.dto.BatchLinkUpIncrementalRunRequest;
 import org.apache.seatunnel.web.spi.bean.dto.BatchLinkUpIncrementalSqlTestRequest;
 import org.apache.seatunnel.web.spi.bean.dto.SyncWatermarkUpdateRequest;
+import org.apache.seatunnel.web.spi.bean.dto.command.BatchJobSaveCommand;
 import org.apache.seatunnel.web.spi.bean.dto.command.JobDefinitionSaveCommand;
+import org.apache.seatunnel.web.spi.bean.dto.config.JobScheduleConfig;
 import org.apache.seatunnel.web.spi.bean.entity.PaginationResult;
 import org.apache.seatunnel.web.spi.bean.vo.BatchLinkUpIncrementalConfigVO;
 import org.apache.seatunnel.web.spi.bean.vo.BatchLinkUpIncrementalContextVO;
@@ -91,6 +94,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -109,6 +113,21 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
     private static final DateTimeFormatter ID_TIME_FORMATTER =
             DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
     private static final SecureRandom RANDOM = new SecureRandom();
+    private static final Set<String> RESERVED_SYSTEM_VARIABLES = Set.of(
+            "batch_id",
+            "run_id",
+            "task_id",
+            "task_code",
+            "batch_start_value",
+            "batch_end_value",
+            "batch_start_time",
+            "batch_end_time",
+            "watermark_value",
+            "watermark_time",
+            "last_success_batch_id",
+            "last_success_run_id",
+            "biz_date"
+    );
 
     @Resource
     private BatchJobDefinitionQueryService batchJobDefinitionQueryService;
@@ -145,6 +164,9 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
 
     @Resource
     private HoconRenderService hoconRenderService;
+
+    @Resource
+    private TimeVariableJdbcSqlRenderService timeVariableJdbcSqlRenderService;
 
     @Resource
     private SyncZetaClient syncZetaClient;
@@ -200,7 +222,7 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         IncrementalContext context = buildContext(
                 definition,
                 config,
-                hocon.originalHocon,
+                hocon,
                 request == null ? Map.of() : nullToEmpty(request.getParams()),
                 generateBatchId(taskCode(definition)),
                 generateRunId(taskCode(definition)),
@@ -220,7 +242,7 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         IncrementalContext context = buildContext(
                 definition,
                 config,
-                hocon.originalHocon,
+                hocon,
                 request == null ? Map.of() : nullToEmpty(request.getParams()),
                 generateBatchId(taskCode(definition)),
                 generateRunId(taskCode(definition)),
@@ -229,11 +251,14 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
 
         BatchLinkUpIncrementalHoconPreviewVO vo = new BatchLinkUpIncrementalHoconPreviewVO();
         vo.setOriginalHocon(hocon.originalHocon);
+        vo.setContext(context.vo);
         vo.setVariables(context.variables);
+        vo.setExecutedSqls(context.vo.getExecutedSqls());
         vo.setMissingVariables(context.vo.getMissingVariables());
+        vo.setDiagnostics(context.vo.getDiagnostics());
         vo.setWarnings(context.vo.getDiagnostics());
         if (context.vo.getMissingVariables().isEmpty()) {
-            vo.setRenderedHocon(hoconRenderService.render(hocon.originalHocon, context.variables));
+            vo.setRenderedHocon(renderIncrementalHocon(hocon, context));
         }
         return vo;
     }
@@ -270,7 +295,7 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
             syncAuditService.appendInfo(null, batchId, task.getId(), task.getTaskCode(),
                     SyncAuditEventType.CREATE_BATCH, "Batch-link-up incremental batch created", batch);
 
-            context = buildContext(definition, config, hocon.originalHocon, params, batchId, runId, true);
+            context = buildContext(definition, config, hocon, params, batchId, runId, true);
             fillBatchRange(batch, context);
             syncBatchService.update(batch);
             updateBatchStatus(batch, SyncBatchStatus.READY, null);
@@ -283,7 +308,7 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
             syncAuditService.appendInfo(runId, batchId, task.getId(), task.getTaskCode(),
                     SyncAuditEventType.CREATE_RUN, "Batch-link-up incremental run created", run);
 
-            String renderedHocon = hoconRenderService.render(hocon.originalHocon, context.variables);
+            String renderedHocon = renderIncrementalHocon(hocon, context);
             String hoconHash = hoconRenderService.calculateHash(renderedHocon);
             syncRunService.updateGeneratedHocon(runId, renderedHocon);
             run.setGeneratedHocon(renderedHocon);
@@ -469,27 +494,24 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
             Long taskId,
             BatchLinkUpIncrementalSqlTestRequest request
     ) {
-        JobDefinitionEntity definition = loadDefinition(taskId);
-        SyncIncrementalConfigEntity config = loadEnabledConfig(definition, false);
-        HoconBundle hocon = loadHocon(definition.getId());
         if (request == null || isBlank(request.getSql())) {
-            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "sql");
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR.getCode(), "请先填写 SQL");
         }
-        IncrementalContext context = buildContext(
-                definition,
-                config,
-                hocon.originalHocon,
-                nullToEmpty(request.getParams()),
-                generateBatchId(taskCode(definition)),
-                generateRunId(taskCode(definition)),
-                false
+
+        JobDefinitionEntity definition = loadDefinition(taskId);
+        SyncIncrementalConfigEntity config =
+                syncIncrementalConfigService.getByBatchLinkUpTaskId(definition.getId());
+        Long datasourceId = resolveTestSqlDatasourceId(request, config);
+        if (datasourceId == null) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR.getCode(), "请选择数据源");
+        }
+
+        String renderedSql = hoconRenderService.render(
+                request.getSql().trim(),
+                buildTestSqlVariables(definition, request)
         );
-        Long datasourceId = request.getDatasourceId() == null
-                ? resolveBoundaryDatasourceId(definition, config)
-                : request.getDatasourceId();
-        String renderedSql = hoconRenderService.render(request.getSql(), context.variables);
         QueryResult queryResult = executeQuery(
-                "test_sql",
+                resolveTestSqlName(request),
                 datasourceId,
                 renderedSql,
                 Boolean.TRUE.equals(request.getScalar())
@@ -497,10 +519,67 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         return queryResult.toVo();
     }
 
+    private Map<String, Object> buildTestSqlVariables(
+            JobDefinitionEntity definition,
+            BatchLinkUpIncrementalSqlTestRequest request
+    ) {
+        String code = taskCode(definition);
+        Map<String, Object> variables = new LinkedHashMap<>(nullToEmpty(request.getParams()));
+        variables.put("batch_id", generateBatchId(code));
+        variables.put("run_id", generateRunId(code));
+        variables.put("task_id", definition.getId());
+        variables.put("task_code", code);
+        variables.put("task_name", definition.getJobName());
+        variables.put("biz_date", LocalDate.now().toString());
+        return variables;
+    }
+
+    private Long resolveTestSqlDatasourceId(
+            BatchLinkUpIncrementalSqlTestRequest request,
+            SyncIncrementalConfigEntity config
+    ) {
+        Long requestDatasourceId = normalizeDatasourceId(request.getDatasourceId());
+        if (requestDatasourceId != null) {
+            return requestDatasourceId;
+        }
+        if (config == null) {
+            return null;
+        }
+        if (isCheckSqlTest(request)) {
+            Long checkDatasourceId = normalizeDatasourceId(config.getCheckDatasourceId());
+            if (checkDatasourceId != null) {
+                return checkDatasourceId;
+            }
+        }
+        return normalizeDatasourceId(config.getBoundaryDatasourceId());
+    }
+
+    private Long normalizeDatasourceId(Long datasourceId) {
+        return datasourceId == null || datasourceId <= 0 ? null : datasourceId;
+    }
+
+    private boolean isCheckSqlTest(BatchLinkUpIncrementalSqlTestRequest request) {
+        String value = firstNonBlank(request.getFieldName(), request.getSqlType());
+        if (isBlank(value)) {
+            return false;
+        }
+        String normalized = value.trim()
+                .replace("-", "_")
+                .toLowerCase(Locale.ROOT);
+        return "check_sql".equals(normalized)
+                || "checksql".equals(normalized)
+                || "check".equals(normalized);
+    }
+
+    private String resolveTestSqlName(BatchLinkUpIncrementalSqlTestRequest request) {
+        String value = firstNonBlank(request.getFieldName(), request.getSqlType());
+        return isBlank(value) ? "test_sql" : value.trim();
+    }
+
     private IncrementalContext buildContext(
             JobDefinitionEntity definition,
             SyncIncrementalConfigEntity config,
-            String originalHocon,
+            HoconBundle hocon,
             Map<String, Object> requestParams,
             String batchId,
             String runId,
@@ -511,8 +590,10 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
                 defaultWatermarkKey(config.getWatermarkKey())
         );
         Map<String, Object> variables = new LinkedHashMap<>();
-        Map<String, Object> params = new LinkedHashMap<>(parseJsonMap(config.getDefaultParamsJson()));
+        Map<String, Object> params = new LinkedHashMap<>(renderScheduleParams(hocon.scheduleConfig));
+        params.putAll(parseJsonMap(config.getDefaultParamsJson()));
         params.putAll(requestParams == null ? Map.of() : requestParams);
+        List<String> reservedParamConflicts = findReservedParamConflicts(params);
         Map<String, Object> customContext = new LinkedHashMap<>(parseJsonMap(config.getCustomContextJson()));
 
         variables.putAll(params);
@@ -540,6 +621,9 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         vo.setLastSuccessBatchId(valueToString(variables.get("last_success_batch_id")));
         vo.setLastSuccessRunId(valueToString(variables.get("last_success_run_id")));
         vo.setBizDate(valueToString(variables.get("biz_date")));
+        if (!reservedParamConflicts.isEmpty()) {
+            vo.getDiagnostics().add("用户参数包含系统保留变量，已使用系统值覆盖：" + reservedParamConflicts);
+        }
 
         Long datasourceId = resolveBoundaryDatasourceId(definition, config);
         try {
@@ -610,7 +694,7 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         vo.setCustomContext(customContext);
         removePreparedMarkers(variables);
         vo.setVariables(variables);
-        vo.setMissingVariables(hoconRenderService.findMissingVariables(originalHocon, variables));
+        vo.setMissingVariables(hoconRenderService.findMissingVariables(hocon.originalHocon, variables));
 
         IncrementalContext context = new IncrementalContext();
         context.vo = vo;
@@ -1101,6 +1185,9 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         bundle.versionId = content.getId();
         bundle.versionNo = content.getVersion();
         bundle.originalHocon = hocon;
+        if (command instanceof BatchJobSaveCommand) {
+            bundle.scheduleConfig = ((BatchJobSaveCommand) command).getSchedule();
+        }
         return bundle;
     }
 
@@ -1414,6 +1501,27 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         return isBlank(value) ? SyncConstants.DEFAULT_WATERMARK_KEY : value;
     }
 
+    private String renderIncrementalHocon(HoconBundle hocon, IncrementalContext context) {
+        return hoconRenderService.render(hocon.originalHocon, context.variables);
+    }
+
+    private Map<String, String> renderScheduleParams(JobScheduleConfig scheduleConfig) {
+        return timeVariableJdbcSqlRenderService.renderScheduleParams(scheduleConfig);
+    }
+
+    private List<String> findReservedParamConflicts(Map<String, Object> params) {
+        if (params == null || params.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<String> conflicts = new ArrayList<>();
+        params.keySet().forEach(key -> {
+            if (key != null && (RESERVED_SYSTEM_VARIABLES.contains(key) || key.startsWith("custom."))) {
+                conflicts.add(key);
+            }
+        });
+        return conflicts;
+    }
+
     private String firstNonBlank(String... values) {
         if (values == null) {
             return null;
@@ -1479,6 +1587,7 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         private Long versionId;
         private Integer versionNo;
         private String originalHocon;
+        private JobScheduleConfig scheduleConfig;
     }
 
     private static class IncrementalContext {

@@ -107,7 +107,7 @@ public class BatchLinkUpIncrementalController {
     @PostMapping("/test-incremental-sql")
     public Result<BatchLinkUpIncrementalContextVO.SqlExecutionVO> testSql(
             @PathVariable("taskId") Long taskId,
-            @RequestBody BatchLinkUpIncrementalSqlTestRequest request
+            @RequestBody(required = false) BatchLinkUpIncrementalSqlTestRequest request
     ) {
         return Result.buildSuc(batchLinkUpIncrementalService.testSql(taskId, request));
     }
