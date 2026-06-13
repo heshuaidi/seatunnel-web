@@ -7,6 +7,8 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.apache.seatunnel.web.common.enums.SyncBoundaryMode;
+import org.apache.seatunnel.web.common.enums.SyncBoundaryValueSource;
 import org.apache.seatunnel.web.common.enums.SyncFileCursorMode;
 import org.apache.seatunnel.web.common.enums.SyncIncrementalStrategy;
 import org.apache.seatunnel.web.common.enums.SyncSourceType;
@@ -25,6 +27,54 @@ public class SyncIncrementalConfigEntity {
     private Long id;
 
     private Long taskId;
+
+    private Long batchLinkUpTaskId;
+
+    private Boolean enabled;
+
+    private String rangeType;
+
+    private SyncBoundaryMode boundaryMode;
+
+    private SyncBoundaryValueSource startValueSource;
+
+    private SyncBoundaryValueSource endValueSource;
+
+    private SyncBoundaryValueSource startTimeSource;
+
+    private SyncBoundaryValueSource endTimeSource;
+
+    private Long boundaryDatasourceId;
+
+    private String batchPrepareSql;
+
+    private String batchStartValueSql;
+
+    private String batchEndValueSql;
+
+    private String batchStartTimeSql;
+
+    private String batchEndTimeSql;
+
+    private String fixedStartValue;
+
+    private String fixedEndValue;
+
+    private String fixedStartTime;
+
+    private String fixedEndTime;
+
+    private String defaultParamsJson;
+
+    private String customContextJson;
+
+    private Boolean successUpdateWatermark;
+
+    private Boolean checkEnabled;
+
+    private Long checkDatasourceId;
+
+    private String checkSql;
 
     private SyncSourceType sourceType;
 

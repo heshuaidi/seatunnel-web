@@ -1,5 +1,7 @@
 # 通用增量 Batch 同步控制模块
 
+> 当前正式产品方向已调整为“batch-link-up HOCON 任务 + 增量运行控制层”。本文保留为 sync-control 元数据、旧测试台和历史阶段说明。正式使用方式见 `docs/batch-link-up-incremental-control.md`，不要继续扩展内置模板作为正式主流程。
+
 ## 目标
 
 通用增量同步控制模块用于承载后续 Fab MES/EAP/SPC/WAT/CP translator/loader 改造中的批次运行元数据。模块统一管理任务、HOCON 模板版本、增量策略配置、watermark、batch、run、audit 以及文件类 source 的 manifest，为 JDBC/SQL/LocalFile/FtpFile 到 StarRocks/JDBC/LocalFile 的批同步提供一致的控制面。

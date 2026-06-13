@@ -38,6 +38,19 @@ public class SyncIncrementalConfigDaoImpl
     }
 
     @Override
+    public SyncIncrementalConfigEntity queryByBatchLinkUpTaskId(Long batchLinkUpTaskId) {
+        if (batchLinkUpTaskId == null) {
+            return null;
+        }
+        return syncIncrementalConfigMapper.selectOne(
+                new LambdaQueryWrapper<SyncIncrementalConfigEntity>()
+                        .eq(SyncIncrementalConfigEntity::getBatchLinkUpTaskId, batchLinkUpTaskId)
+                        .orderByDesc(SyncIncrementalConfigEntity::getCreateTime)
+                        .last("limit 1")
+        );
+    }
+
+    @Override
     public SyncIncrementalConfigEntity queryByTaskIdAndWatermarkKey(Long taskId, String watermarkKey) {
         if (taskId == null || isBlank(watermarkKey)) {
             return null;

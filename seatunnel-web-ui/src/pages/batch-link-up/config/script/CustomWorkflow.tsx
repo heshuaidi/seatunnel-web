@@ -1,13 +1,14 @@
 import { ArrowLeftOutlined, SendOutlined } from "@ant-design/icons";
 import { Button, Popconfirm, Popover, Space, Tooltip } from "antd";
-import { Eye, FileCode2, PlayCircle, RefreshCw } from "lucide-react";
-import React from "react";
+import { DatabaseZap, Eye, FileCode2, PlayCircle, RefreshCw } from "lucide-react";
+import React, { useState } from "react";
 
-import { EnvConfig } from "../../workflow/components/ScheduleConfigContent/types";
+import type { EnvConfig } from "../../workflow/components/ScheduleConfigContent/types";
 import CodeBlockWithCopy from "../../workflow/operator/CodeBlockWithCopy";
 import RightConfigPanel from "../../workflow/RightConfigPanel";
 import { useResizablePanel } from "../multi/hooks/useResizablePanel";
 import HoconEditorPanel from "./HoconEditorPanel";
+import IncrementalControlDrawer from "./IncrementalControlDrawer";
 import { useCustomWorkflowState } from "./hooks/useCustomWorkflowState";
 
 interface CustomWorkflowProps {
@@ -34,6 +35,8 @@ export default function CustomWorkflow({
   setEnvConfig,
 }: CustomWorkflowProps) {
   const { rightWidth, handleResizeStart } = useResizablePanel(520);
+  const [incrementalOpen, setIncrementalOpen] = useState(false);
+  const [insertText, setInsertText] = useState("");
 
   const {
     activeTab,
@@ -118,6 +121,15 @@ export default function CustomWorkflow({
                   </div>
 
                   <Space size={10}>
+                    <Button
+                      type="default"
+                      icon={<DatabaseZap size={15} strokeWidth={1.9} />}
+                      onClick={() => setIncrementalOpen(true)}
+                      className={actionButtonClass}
+                    >
+                      增量控制
+                    </Button>
+
                     <Tooltip title={runDisabledReason}>
                       <Button
                         type="default"
@@ -156,11 +168,10 @@ export default function CustomWorkflow({
                         </div>
                       }
                     >
-                      <div
+                      <button
+                        type="button"
                         className={actionChipClass}
                         onClick={handlePreview}
-                        role="button"
-                        tabIndex={0}
                       >
                         <Eye
                           size={15}
@@ -168,7 +179,7 @@ export default function CustomWorkflow({
                           className={previewLoading ? "animate-spin" : ""}
                         />
                         <span className="ml-1">预览</span>
-                      </div>
+                      </button>
                     </Popover>
 
                     {hoconContent?.trim() ? (
@@ -180,10 +191,9 @@ export default function CustomWorkflow({
                         placement="bottomRight"
                         onConfirm={handleReloadTemplate}
                       >
-                        <div
+                        <button
+                          type="button"
                           className={actionChipClass}
-                          role="button"
-                          tabIndex={0}
                         >
                           <RefreshCw
                             size={15}
@@ -191,14 +201,13 @@ export default function CustomWorkflow({
                             className={templateLoading ? "animate-spin" : ""}
                           />
                           <span className="ml-1">模板</span>
-                        </div>
+                        </button>
                       </Popconfirm>
                     ) : (
-                      <div
+                      <button
+                        type="button"
                         className={actionChipClass}
                         onClick={handleReloadTemplate}
-                        role="button"
-                        tabIndex={0}
                       >
                         <RefreshCw
                           size={15}
@@ -206,7 +215,7 @@ export default function CustomWorkflow({
                           className={templateLoading ? "animate-spin" : ""}
                         />
                         <span className="ml-1">模板</span>
-                      </div>
+                      </button>
                     )}
                   </Space>
                 </div>
@@ -216,6 +225,8 @@ export default function CustomWorkflow({
                     <HoconEditorPanel
                       value={hoconContent}
                       onChange={setHoconContent}
+                      insertText={insertText}
+                      onInserted={() => setInsertText("")}
                     />
                   </div>
                 </div>
@@ -226,9 +237,6 @@ export default function CustomWorkflow({
               <div
                 className="relative flex w-[20px] shrink-0 cursor-col-resize items-center justify-center bg-transparent transition-colors duration-100 hover:bg-[rgba(49,94,251,0.04)]"
                 onMouseDown={handleResizeStart}
-                role="separator"
-                aria-orientation="vertical"
-                aria-label="调整左右面板宽度"
               >
                 <div className="h-full w-px bg-slate-200 transition-colors duration-100" />
                 <div className="absolute left-1/2 top-1/2 flex h-[46px] w-5 -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center gap-1 rounded-full border border-slate-200 bg-white opacity-90 shadow-sm transition-all duration-200 hover:opacity-100 hover:shadow-[0_10px_28px_rgba(15,23,42,0.1)]">
@@ -257,6 +265,13 @@ export default function CustomWorkflow({
           </div>
         </div>
       </div>
+
+      <IncrementalControlDrawer
+        taskId={params?.id || basicConfig?.id}
+        open={incrementalOpen}
+        onClose={() => setIncrementalOpen(false)}
+        onInsertPlaceholder={setInsertText}
+      />
     </div>
   );
 }

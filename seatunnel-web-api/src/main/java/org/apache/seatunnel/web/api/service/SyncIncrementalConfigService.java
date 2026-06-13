@@ -14,6 +14,8 @@ public interface SyncIncrementalConfigService {
 
     SyncIncrementalConfigEntity getByTaskId(Long taskId);
 
+    SyncIncrementalConfigEntity getByBatchLinkUpTaskId(Long batchLinkUpTaskId);
+
     SyncIncrementalConfigEntity getByTaskIdAndWatermarkKey(Long taskId, String watermarkKey);
 
     List<SyncIncrementalConfigEntity> listByTaskId(Long taskId);
