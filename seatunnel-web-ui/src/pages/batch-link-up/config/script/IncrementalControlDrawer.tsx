@@ -366,7 +366,16 @@ export default function IncrementalControlDrawer({
         message.error(res?.message || '增量运行失败');
         return;
       }
-      setResultTitle('增量运行结果');
+      const failed =
+        res.data?.errorMessage ||
+        res.data?.status === 'FAILED' ||
+        res.data?.runStatus === 'FAILED' ||
+        res.data?.batchStatus === 'FAILED' ||
+        res.data?.jobStatus === 'FAILED';
+      if (res.data?.errorMessage) {
+        message.error(res.data.errorMessage);
+      }
+      setResultTitle(failed ? '增量运行失败' : '增量运行结果');
       setResultValue(res.data);
       setResultOpen(true);
       await loadData();
@@ -894,6 +903,14 @@ export default function IncrementalControlDrawer({
         footer={null}
         width={760}
       >
+        {resultValue?.errorMessage ? (
+          <Alert
+            type="error"
+            showIcon
+            className="mb-3"
+            message={resultValue.errorMessage}
+          />
+        ) : null}
         {jsonBlock(resultValue)}
       </Modal>
     </>

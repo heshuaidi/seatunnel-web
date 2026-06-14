@@ -252,14 +252,28 @@ const ActionColumn: React.FC<ActionColumnProps> = ({
         })) as any;
         if (response?.code === 0) {
           const result = response?.data || {};
-          Modal.info({
-            title: '手动增量运行结果',
+          const failed =
+            result?.errorMessage ||
+            result?.status === 'FAILED' ||
+            result?.runStatus === 'FAILED' ||
+            result?.batchStatus === 'FAILED' ||
+            result?.jobStatus === 'FAILED';
+          const modal = failed ? Modal.error : Modal.info;
+          modal({
+            title: failed ? '手动增量运行失败' : '手动增量运行结果',
             centered: true,
             width: 720,
             content: (
-              <pre className="max-h-[420px] overflow-auto rounded-md border border-slate-200 bg-slate-950 p-3 text-xs leading-5 text-slate-100">
-                {JSON.stringify(result, null, 2)}
-              </pre>
+              <div>
+                {result?.errorMessage ? (
+                  <div className="mb-3 text-sm text-red-600">
+                    {result.errorMessage}
+                  </div>
+                ) : null}
+                <pre className="max-h-[420px] overflow-auto rounded-md border border-slate-200 bg-slate-950 p-3 text-xs leading-5 text-slate-100">
+                  {JSON.stringify(result, null, 2)}
+                </pre>
+              </div>
             ),
           });
           cbk();

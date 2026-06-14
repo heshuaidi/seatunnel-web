@@ -1,15 +1,19 @@
 package org.apache.seatunnel.web.api.service.impl;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.seatunnel.web.api.service.SyncZetaClient;
 import org.apache.seatunnel.web.api.service.model.SyncJobStatusResult;
 import org.apache.seatunnel.web.api.service.model.SyncSubmitJobResult;
+import org.apache.seatunnel.web.common.utils.JSONUtils;
 import org.apache.seatunnel.web.core.exceptions.ServiceException;
 import org.apache.seatunnel.web.engine.client.exceptions.SeatunnelClientException;
 import org.apache.seatunnel.web.engine.client.rest.SeaTunnelRestClient;
 import org.apache.seatunnel.web.spi.enums.Status;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.web.client.RestClientResponseException;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -20,6 +24,9 @@ import java.util.Map;
 @Slf4j
 @SuppressWarnings({"rawtypes", "unchecked"})
 public class SyncZetaClientImpl implements SyncZetaClient {
+
+    private static final String SUBMIT_JOB_TEXT_FAILED = "POST /submit-job(text) failed";
+    private static final int ERROR_SUMMARY_MAX_LENGTH = 500;
 
     @Resource
     private SeaTunnelRestClient seaTunnelRestClient;
@@ -41,8 +48,9 @@ public class SyncZetaClientImpl implements SyncZetaClient {
                     false
             );
         } catch (Exception e) {
-            logSubmitFailure(clientId, jobName, e);
-            throw new ServiceException(errorMessage(e), e);
+            String message = submitJobErrorMessage(e);
+            logSubmitFailure(clientId, jobName, message, e);
+            throw new ServiceException(message, e);
         }
 
         SyncSubmitJobResult result = new SyncSubmitJobResult();
@@ -286,25 +294,157 @@ public class SyncZetaClientImpl implements SyncZetaClient {
     }
 
     private String errorMessage(Exception e) {
-        if (e instanceof SeatunnelClientException) {
-            SeatunnelClientException clientException = (SeatunnelClientException) e;
-            return clientException.getMessage();
+        String summary = extractBestErrorSummary(e);
+        if (!isBlank(summary)) {
+            return summary;
         }
-        return e.getMessage() == null ? e.toString() : e.getMessage();
+        return e == null || e.getMessage() == null ? String.valueOf(e) : e.getMessage();
     }
 
-    private void logSubmitFailure(Long clientId, String jobName, Exception e) {
-        if (e instanceof SeatunnelClientException) {
-            SeatunnelClientException clientException = (SeatunnelClientException) e;
-            log.error("Submit SeaTunnel job failed, clientId={}, jobName={}, httpStatus={}, responseBody={}",
-                    clientId,
-                    jobName,
-                    clientException.getHttpStatus(),
-                    abbreviate(clientException.getResponseBody(), 4000),
-                    e);
-            return;
+    private String submitJobErrorMessage(Exception e) {
+        String summary = extractBestErrorSummary(e);
+        if (isBlank(summary)) {
+            summary = e == null || e.getMessage() == null ? String.valueOf(e) : e.getMessage();
         }
-        log.error("Submit SeaTunnel job failed, clientId={}, jobName={}", clientId, jobName, e);
+        if (summary != null && summary.startsWith(SUBMIT_JOB_TEXT_FAILED)) {
+            return summary;
+        }
+        return isBlank(summary) ? SUBMIT_JOB_TEXT_FAILED : SUBMIT_JOB_TEXT_FAILED + ": " + summary;
+    }
+
+    private void logSubmitFailure(Long clientId, String jobName, String message, Exception e) {
+        log.error(
+                "Submit SeaTunnel job failed, clientId={}, jobName={}, errorMessage={}, httpStatus={}, responseHeaders={}, responseBody={}",
+                clientId,
+                jobName,
+                message,
+                firstNonBlankResponseStatus(e),
+                abbreviate(firstNonBlankResponseHeaders(e), 2000),
+                abbreviate(firstNonBlankResponseBody(e), 4000),
+                e);
+    }
+
+    private String extractBestErrorSummary(Throwable throwable) {
+        for (Throwable current = throwable; current != null; current = current.getCause()) {
+            String bodySummary = extractErrorSummaryFromBody(responseBody(current));
+            if (!isBlank(bodySummary)) {
+                return bodySummary;
+            }
+        }
+
+        for (Throwable current = throwable; current != null; current = current.getCause()) {
+            String messageSummary = extractRootCause(current.getMessage());
+            if (!isBlank(messageSummary)) {
+                return messageSummary;
+            }
+        }
+        return null;
+    }
+
+    private String extractErrorSummaryFromBody(String responseBody) {
+        if (isBlank(responseBody)) {
+            return null;
+        }
+        try {
+            Map<String, Object> body = JSONUtils.parseObject(
+                    responseBody,
+                    new TypeReference<Map<String, Object>>() {}
+            );
+            String summary = findErrorSummary(body);
+            if (!isBlank(summary)) {
+                return summary;
+            }
+        } catch (Exception ignored) {
+            // SeaTunnel may return plain text or a truncated JSON body.
+        }
+        return extractRootCause(responseBody);
+    }
+
+    private String responseBody(Throwable throwable) {
+        if (throwable instanceof SeatunnelClientException) {
+            return ((SeatunnelClientException) throwable).getResponseBody();
+        }
+        if (throwable instanceof HttpStatusCodeException) {
+            return ((HttpStatusCodeException) throwable).getResponseBodyAsString();
+        }
+        if (throwable instanceof RestClientResponseException) {
+            return ((RestClientResponseException) throwable).getResponseBodyAsString();
+        }
+        return invokeStringGetter(throwable, "getResponseBodyAsString", "getResponseBody");
+    }
+
+    private String responseHeaders(Throwable throwable) {
+        if (throwable instanceof SeatunnelClientException) {
+            return ((SeatunnelClientException) throwable).getResponseHeaders();
+        }
+        if (throwable instanceof HttpStatusCodeException) {
+            return String.valueOf(((HttpStatusCodeException) throwable).getResponseHeaders());
+        }
+        if (throwable instanceof RestClientResponseException) {
+            return String.valueOf(((RestClientResponseException) throwable).getResponseHeaders());
+        }
+        return invokeStringGetter(throwable, "getResponseHeaders", "getHeaders");
+    }
+
+    private String responseStatus(Throwable throwable) {
+        if (throwable instanceof SeatunnelClientException) {
+            int status = ((SeatunnelClientException) throwable).getHttpStatus();
+            return status < 0 ? null : String.valueOf(status);
+        }
+        if (throwable instanceof HttpStatusCodeException) {
+            return String.valueOf(((HttpStatusCodeException) throwable).getStatusCode().value());
+        }
+        if (throwable instanceof RestClientResponseException) {
+            return String.valueOf(((RestClientResponseException) throwable).getStatusCode().value());
+        }
+        return invokeStringGetter(throwable, "getStatusCode", "getRawStatusCode");
+    }
+
+    private String firstNonBlankResponseBody(Throwable throwable) {
+        for (Throwable current = throwable; current != null; current = current.getCause()) {
+            String value = responseBody(current);
+            if (!isBlank(value)) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private String firstNonBlankResponseHeaders(Throwable throwable) {
+        for (Throwable current = throwable; current != null; current = current.getCause()) {
+            String value = responseHeaders(current);
+            if (!isBlank(value) && !"null".equalsIgnoreCase(value.trim())) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private String firstNonBlankResponseStatus(Throwable throwable) {
+        for (Throwable current = throwable; current != null; current = current.getCause()) {
+            String value = responseStatus(current);
+            if (!isBlank(value)) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private String invokeStringGetter(Throwable throwable, String... methodNames) {
+        if (throwable == null || methodNames == null) {
+            return null;
+        }
+        for (String methodName : methodNames) {
+            try {
+                Object value = throwable.getClass().getMethod(methodName).invoke(throwable);
+                if (value != null) {
+                    return String.valueOf(value);
+                }
+            } catch (Exception ignored) {
+                // Not every RestTemplate-related exception exposes response metadata.
+            }
+        }
+        return null;
     }
 
     private String findErrorSummary(Object value) {
@@ -317,9 +457,9 @@ public class SyncZetaClientImpl implements SyncZetaClient {
                 String keyText = key == null ? "" : String.valueOf(key);
                 Object item = map.get(key);
                 if (isErrorKey(keyText) && item != null && !(item instanceof Map) && !(item instanceof List)) {
-                    String text = String.valueOf(item).trim();
+                    String text = extractRootCause(String.valueOf(item));
                     if (!isBlank(text)) {
-                        return abbreviate(text.replaceAll("\\s+", " "), 500);
+                        return text;
                     }
                 }
             }
@@ -350,6 +490,51 @@ public class SyncZetaClientImpl implements SyncZetaClient {
                 || normalized.contains("error")
                 || "message".equals(normalized)
                 || "cause".equals(normalized);
+    }
+
+    private String extractRootCause(String value) {
+        String normalized = normalizeErrorText(value);
+        if (isBlank(normalized)) {
+            return null;
+        }
+
+        String[] causedByParts = normalized.split("(?i)Caused by:");
+        String deepest = causedByParts.length == 0
+                ? normalized
+                : causedByParts[causedByParts.length - 1].trim();
+        deepest = deepest.replaceFirst("(?i)^root cause:\\s*", "").trim();
+        deepest = deepest.replaceFirst("\\s+at\\s+[A-Za-z_$][A-Za-z0-9_.$]*\\(.+$", "").trim();
+        deepest = deepest.replaceFirst("\\s+Suppressed:\\s+.+$", "").trim();
+        deepest = stripExceptionPrefix(deepest);
+        return abbreviate(deepest, ERROR_SUMMARY_MAX_LENGTH);
+    }
+
+    private String stripExceptionPrefix(String value) {
+        String result = value;
+        while (!isBlank(result)) {
+            String stripped = result.replaceFirst(
+                    "^((?:[A-Za-z_$][A-Za-z0-9_$]*\\.)+[A-Za-z_$][A-Za-z0-9_$]*|[A-Za-z_$][A-Za-z0-9_$]*(?:Exception|Error|Throwable)):\\s+",
+                    ""
+            ).trim();
+            if (stripped.equals(result)) {
+                return result;
+            }
+            result = stripped;
+        }
+        return result;
+    }
+
+    private String normalizeErrorText(String value) {
+        if (value == null) {
+            return null;
+        }
+        return value
+                .replace("\\n", " ")
+                .replace("\\r", " ")
+                .replace("\\t", " ")
+                .replace("\\\"", "\"")
+                .replaceAll("\\s+", " ")
+                .trim();
     }
 
     private String abbreviate(String value, int maxLength) {

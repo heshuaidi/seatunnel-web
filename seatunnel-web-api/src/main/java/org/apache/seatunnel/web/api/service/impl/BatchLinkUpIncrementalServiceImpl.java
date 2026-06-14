@@ -301,15 +301,6 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
             syncAuditService.appendInfo(null, batchId, task.getId(), task.getTaskCode(),
                     SyncAuditEventType.CREATE_BATCH, "Batch-link-up incremental batch created", batch);
 
-            context = buildContext(definition, config, hocon, params, batchId, runId, true);
-            fillBatchRange(batch, context);
-            syncBatchService.update(batch);
-            updateBatchStatus(batch, SyncBatchStatus.READY, null);
-
-            if (!context.vo.getMissingVariables().isEmpty()) {
-                throw new ServiceException("Missing HOCON variables: " + context.vo.getMissingVariables());
-            }
-
             run = createRun(
                     task,
                     version,
@@ -321,6 +312,15 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
             );
             syncAuditService.appendInfo(runId, batchId, task.getId(), task.getTaskCode(),
                     SyncAuditEventType.CREATE_RUN, "Batch-link-up incremental run created", run);
+
+            context = buildContext(definition, config, hocon, params, batchId, runId, true);
+            fillBatchRange(batch, context);
+            syncBatchService.update(batch);
+            updateBatchStatus(batch, SyncBatchStatus.READY, null);
+
+            if (!context.vo.getMissingVariables().isEmpty()) {
+                throw new ServiceException("Missing HOCON variables: " + context.vo.getMissingVariables());
+            }
 
             String renderedHocon = renderIncrementalHocon(hocon, context);
             String hoconHash = hoconRenderService.calculateHash(renderedHocon);
@@ -410,6 +410,7 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
             updateBatchStatus(batch, SyncBatchStatus.FAILED, message);
             if (run != null) {
                 updateRunStatus(run, SyncRunStatus.FAILED, message);
+                recordWatermarkNotAdvanced(task, batch, run, "run failed");
             }
             syncAuditService.appendError(
                     run == null ? null : runId,
@@ -420,10 +421,19 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
                     "Batch-link-up incremental run failed, watermark is not advanced",
                     Map.of("errorMessage", message)
             );
-            if (e instanceof ServiceException) {
-                throw (ServiceException) e;
+            if (run != null) {
+                return toRunResult(
+                        task,
+                        version,
+                        batch,
+                        run,
+                        failedJobStatus(run.getSeatunnelJobId(), message),
+                        false,
+                        null,
+                        message
+                );
             }
-            throw new ServiceException(message, e);
+            throw e instanceof ServiceException ? (ServiceException) e : new ServiceException(message, e);
         }
     }
 
@@ -1117,6 +1127,20 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         timeoutRaw.put("pollTimeoutMs", syncRunProperties.getPollTimeoutMs());
         timeout.setRawResponse(timeoutRaw);
         return timeout;
+    }
+
+    private SyncJobStatusResult failedJobStatus(String jobId, String errorMessage) {
+        SyncJobStatusResult failed = new SyncJobStatusResult();
+        failed.setJobId(jobId);
+        failed.setStatus("FAILED");
+        failed.setEndState(true);
+        failed.setSuccess(false);
+        failed.setErrorMessage(errorMessage);
+        Map<String, Object> raw = new LinkedHashMap<>();
+        raw.put("errorMessage", errorMessage);
+        raw.put("watermarkAdvanced", false);
+        failed.setRawResponse(raw);
+        return failed;
     }
 
     private void recordWatermarkNotAdvanced(

@@ -8,6 +8,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
 
@@ -170,14 +171,29 @@ public class SeaTunnelRestClient {
     }
 
     private RuntimeException wrap(Exception e, String hint) {
+        if (e instanceof SeatunnelClientException) {
+            return (SeatunnelClientException) e;
+        }
         if (e instanceof HttpStatusCodeException) {
             HttpStatusCodeException he = (HttpStatusCodeException) e;
             String body = safe(he.getResponseBodyAsString());
             return new SeatunnelClientException(
                     withSummary(hint, body),
-                    he.getRawStatusCode(),
+                    he.getStatusCode().value(),
                     body,
+                    String.valueOf(he.getResponseHeaders()),
                     he
+            );
+        }
+        if (e instanceof RestClientResponseException) {
+            RestClientResponseException re = (RestClientResponseException) e;
+            String body = safe(re.getResponseBodyAsString());
+            return new SeatunnelClientException(
+                    withSummary(hint, body),
+                    re.getStatusCode().value(),
+                    body,
+                    String.valueOf(re.getResponseHeaders()),
+                    re
             );
         }
 
@@ -204,18 +220,42 @@ public class SeaTunnelRestClient {
         }
         Matcher matcher = JSON_MESSAGE_PATTERN.matcher(responseBody);
         while (matcher.find()) {
-            String value = normalizeErrorText(matcher.group(1));
+            String value = extractRootCause(matcher.group(1));
             if (!isBlank(value)) {
                 return value;
             }
         }
 
-        String normalized = normalizeErrorText(responseBody);
+        String normalized = extractRootCause(responseBody);
+        if (isBlank(normalized)) {
+            return null;
+        }
         int accessDeniedIndex = normalized.toLowerCase().indexOf("access denied");
         if (accessDeniedIndex >= 0) {
             normalized = normalized.substring(accessDeniedIndex);
         }
         return abbreviate(normalized, ERROR_SUMMARY_MAX_LENGTH);
+    }
+
+    private String extractRootCause(String value) {
+        String normalized = normalizeErrorText(value);
+        if (isBlank(normalized)) {
+            return null;
+        }
+        String[] parts = normalized.split("(?i)Caused by:");
+        String deepest = parts.length == 0 ? normalized : parts[parts.length - 1].trim();
+        deepest = deepest.replaceFirst("\\s+at\\s+.+$", "").trim();
+        while (deepest.matches("^((?:[A-Za-z_$][A-Za-z0-9_$]*\\.)+[A-Za-z_$][A-Za-z0-9_$]*|[A-Za-z_$][A-Za-z0-9_$]*(?:Exception|Error|Throwable)):\\s+.*")) {
+            String stripped = deepest.replaceFirst(
+                    "^((?:[A-Za-z_$][A-Za-z0-9_$]*\\.)+[A-Za-z_$][A-Za-z0-9_$]*|[A-Za-z_$][A-Za-z0-9_$]*(?:Exception|Error|Throwable)):\\s+",
+                    ""
+            ).trim();
+            if (stripped.equals(deepest)) {
+                break;
+            }
+            deepest = stripped;
+        }
+        return abbreviate(deepest, ERROR_SUMMARY_MAX_LENGTH);
     }
 
     private String normalizeErrorText(String value) {
