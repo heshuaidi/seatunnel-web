@@ -76,6 +76,14 @@ public class SyncIncrementalConfigEntity {
 
     private String checkSql;
 
+    private String cleanupSql;
+
+    private Long cleanupDatasourceId;
+
+    private Boolean cleanupOnRerun;
+
+    private Boolean cleanupBeforeRetryOnly;
+
     private SyncSourceType sourceType;
 
     private SyncIncrementalStrategy strategy;

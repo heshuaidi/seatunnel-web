@@ -41,6 +41,12 @@ public interface BatchLinkUpIncrementalService {
 
     RunDetailVO getRun(Long taskId, String runId);
 
+    BatchLinkUpIncrementalContextVO.SqlExecutionVO previewCleanupSql(Long taskId, String runId);
+
+    BatchLinkUpIncrementalContextVO.SqlExecutionVO executeCleanupSql(Long taskId, String runId);
+
+    RunResultVO cleanupAndRerun(Long taskId, String runId, BatchLinkUpIncrementalRunRequest request);
+
     PaginationResult<SyncBatchListItemVO> listBatches(Long taskId, Integer pageNo, Integer pageSize, String status);
 
     List<WatermarkVO> getWatermark(Long taskId);

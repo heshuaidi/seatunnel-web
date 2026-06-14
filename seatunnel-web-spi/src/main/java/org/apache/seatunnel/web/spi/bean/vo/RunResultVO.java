@@ -40,4 +40,10 @@ public class RunResultVO {
     private String watermarkValue;
 
     private String errorMessage;
+
+    private Boolean targetMayHaveWritten;
+
+    private Boolean retryRequiresCleanup;
+
+    private String cleanupHint;
 }

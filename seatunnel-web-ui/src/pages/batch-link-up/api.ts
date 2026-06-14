@@ -250,6 +250,27 @@ export const batchLinkUpIncrementalApi = {
     return HttpUtils.get(`${batchLinkUpIncrementalPrefix}/${taskId}/incremental-runs/${runId}`);
   },
 
+  previewCleanupSql: (taskId: string | number, runId: string) => {
+    return HttpUtils.post(
+      `${batchLinkUpIncrementalPrefix}/${taskId}/incremental-runs/${runId}/preview-cleanup-sql`,
+      {},
+    );
+  },
+
+  executeCleanupSql: (taskId: string | number, runId: string) => {
+    return HttpUtils.post(
+      `${batchLinkUpIncrementalPrefix}/${taskId}/incremental-runs/${runId}/execute-cleanup-sql`,
+      {},
+    );
+  },
+
+  cleanupAndRerun: (taskId: string | number, runId: string, data?: any) => {
+    return HttpUtils.post(
+      `${batchLinkUpIncrementalPrefix}/${taskId}/incremental-runs/${runId}/cleanup-and-rerun`,
+      data || {},
+    );
+  },
+
   listRuns: (taskId: string | number, params?: Record<string, any>) => {
     const search = new URLSearchParams();
     Object.entries(params || {}).forEach(([key, value]) => {

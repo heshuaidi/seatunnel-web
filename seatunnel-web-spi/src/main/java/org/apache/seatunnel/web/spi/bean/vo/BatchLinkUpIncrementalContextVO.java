@@ -37,6 +37,8 @@ public class BatchLinkUpIncrementalContextVO {
 
     private Map<String, Object> variables;
 
+    private List<String> systemVariables = new ArrayList<>();
+
     private List<SqlExecutionVO> executedSqls = new ArrayList<>();
 
     private List<String> missingVariables = new ArrayList<>();

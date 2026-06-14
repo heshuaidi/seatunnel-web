@@ -33,7 +33,9 @@ const { TextArea } = Input;
 const PLACEHOLDERS = [
   '$' + '{batch_id}',
   '$' + '{run_id}',
+  '$' + '{task_id}',
   '$' + '{task_code}',
+  '$' + '{watermark_key}',
   '$' + '{batch_start_value}',
   '$' + '{batch_end_value}',
   '$' + '{batch_start_time}',
@@ -41,6 +43,39 @@ const PLACEHOLDERS = [
   '$' + '{watermark_value}',
   '$' + '{watermark_time}',
   '$' + '{biz_date}',
+];
+
+const SYSTEM_VARIABLES = [
+  { name: '$' + '{batch_id}', desc: '本次批次 ID，可用于 sink 批次标记和 cleanup_sql。' },
+  { name: '$' + '{run_id}', desc: '本次运行 ID。' },
+  { name: '$' + '{batch_start_value}', desc: '本批次起始边界。' },
+  { name: '$' + '{batch_end_value}', desc: '本批次结束边界。' },
+  { name: '$' + '{task_id}', desc: 'batch-link-up 任务 ID。' },
+  { name: '$' + '{task_code}', desc: '系统生成任务编码。' },
+  { name: '$' + '{watermark_key}', desc: 'watermark key，默认 default。' },
+];
+
+const RESERVED_CONTEXT_KEYS = [
+  'batch_id',
+  'run_id',
+  'task_id',
+  'task_code',
+  'task_name',
+  'batch_start_value',
+  'batch_end_value',
+  'batch_start_time',
+  'batch_end_time',
+  'watermark_value',
+  'watermark_time',
+  'watermark_key',
+  'current_watermark',
+  'previous_watermark',
+  'last_success_batch_id',
+  'last_success_run_id',
+  'trigger_type',
+  'scheduler_run_id',
+  'seatunnel_job_id',
+  'biz_date',
 ];
 
 const sourceOptions = [
@@ -74,6 +109,10 @@ const FORM_TO_API_FIELD_MAP: Record<string, string> = {
   batch_end_time_sql: 'batchEndTimeSql',
   default_params_json: 'defaultParamsJson',
   custom_context_json: 'customContextJson',
+  cleanup_sql: 'cleanupSql',
+  cleanup_datasource_id: 'cleanupDatasourceId',
+  cleanup_on_rerun: 'cleanupOnRerun',
+  cleanup_before_retry_only: 'cleanupBeforeRetryOnly',
   success_update_watermark: 'successUpdateWatermark',
   check_enabled: 'checkEnabled',
   check_sql: 'checkSql',
@@ -145,6 +184,34 @@ const mergeUnique = (...values: any[]) => {
 const formatNullableCount = (value: any) =>
   value === undefined || value === null || value === '' ? '未获取' : value;
 
+const validateJsonObjectField = (fieldName: string) => async (_: any, value: any) => {
+  if (value === undefined || value === null || String(value).trim() === '') {
+    return Promise.resolve();
+  }
+  let parsed: any;
+  try {
+    parsed = JSON.parse(String(value));
+  } catch (_error) {
+    return Promise.reject(new Error(`${fieldName} JSON 格式错误`));
+  }
+  if (
+    typeof parsed !== 'object' ||
+    parsed === null ||
+    Array.isArray(parsed)
+  ) {
+    return Promise.reject(new Error(`${fieldName} 必须是 JSON object`));
+  }
+  const reservedKey = Object.keys(parsed).find(
+    (key) => RESERVED_CONTEXT_KEYS.includes(key) || key.startsWith('custom.'),
+  );
+  if (reservedKey) {
+    return Promise.reject(
+      new Error(`${fieldName} contains reserved key: ${reservedKey}`),
+    );
+  }
+  return Promise.resolve();
+};
+
 export default function IncrementalControlDrawer({
   taskId,
   open,
@@ -161,6 +228,7 @@ export default function IncrementalControlDrawer({
   const [saving, setSaving] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [running, setRunning] = useState(false);
+  const [cleanupingRunId, setCleanupingRunId] = useState<string | null>(null);
   const [contextPreview, setContextPreview] = useState<any>(null);
   const [hoconPreview, setHoconPreview] = useState<any>(null);
   const [runs, setRuns] = useState<any[]>([]);
@@ -227,6 +295,8 @@ export default function IncrementalControlDrawer({
       end_time_source: 'NONE',
       success_update_watermark: true,
       check_enabled: false,
+      cleanup_on_rerun: false,
+      cleanup_before_retry_only: true,
     }),
     [],
   );
@@ -373,9 +443,19 @@ export default function IncrementalControlDrawer({
         res.data?.batchStatus === 'FAILED' ||
         res.data?.jobStatus === 'FAILED';
       if (res.data?.errorMessage) {
-        message.error(res.data.errorMessage);
+        if (res.data?.status === 'SKIPPED' || res.data?.runStatus === 'SKIPPED') {
+          message.warning('当前任务已有增量运行正在执行，请稍后再试。');
+        } else {
+          message.error(res.data.errorMessage);
+        }
       }
-      setResultTitle(failed ? '增量运行失败' : '增量运行结果');
+      setResultTitle(
+        res.data?.status === 'SKIPPED' || res.data?.runStatus === 'SKIPPED'
+          ? '增量运行已跳过'
+          : failed
+            ? '增量运行失败'
+            : '增量运行结果',
+      );
       setResultValue(res.data);
       setResultOpen(true);
       await loadData();
@@ -415,6 +495,89 @@ export default function IncrementalControlDrawer({
     } catch (_error) {
       message.error('SQL 测试失败');
     }
+  };
+
+  const copyCleanupSql = async (record: any) => {
+    if (normalizedTaskId === undefined || !record?.runId) return;
+    const res = (await batchLinkUpIncrementalApi.previewCleanupSql(
+      normalizedTaskId,
+      record.runId,
+    )) as any;
+    if (res?.code !== 0 || res.data?.success === false) {
+      message.error(res?.message || res.data?.errorMessage || 'cleanup_sql 预览失败');
+      return;
+    }
+    await navigator.clipboard?.writeText(res.data?.renderedSql || '');
+    message.success('cleanup_sql 已复制');
+  };
+
+  const executeCleanupSql = (record: any) => {
+    if (normalizedTaskId === undefined || !record?.runId) return;
+    Modal.confirm({
+      title: '确认执行 cleanup_sql？',
+      content:
+        '该操作会直接连接 cleanup_datasource_id 执行清理 SQL。请确认 SQL 只清理本次失败批次数据。',
+      okText: '执行 cleanup_sql',
+      cancelText: '取消',
+      onOk: async () => {
+        setCleanupingRunId(record.runId);
+        try {
+          const res = (await batchLinkUpIncrementalApi.executeCleanupSql(
+            normalizedTaskId,
+            record.runId,
+          )) as any;
+          if (res?.code !== 0 || res.data?.success === false) {
+            message.error(
+              res?.message || res.data?.errorMessage || 'cleanup_sql 执行失败',
+            );
+            return;
+          }
+          message.success('cleanup_sql 执行成功');
+          setResultTitle('cleanup_sql 执行结果');
+          setResultValue(res.data);
+          setResultOpen(true);
+          await loadData();
+        } finally {
+          setCleanupingRunId(null);
+        }
+      },
+    });
+  };
+
+  const cleanupAndRerun = (record: any) => {
+    if (normalizedTaskId === undefined || !record?.runId) return;
+    Modal.confirm({
+      title: '确认清理并重跑？',
+      content:
+        '系统会先执行 cleanup_sql。清理失败时不会继续重跑，watermark 也不会推进。',
+      okText: '清理并重跑',
+      cancelText: '取消',
+      onOk: async () => {
+        setCleanupingRunId(record.runId);
+        try {
+          const res = (await batchLinkUpIncrementalApi.cleanupAndRerun(
+            normalizedTaskId,
+            record.runId,
+            { waitForFinish: true, runMode: 'RERUN' },
+          )) as any;
+          if (res?.code !== 0) {
+            message.error(res?.message || '清理并重跑失败');
+            return;
+          }
+          if (res.data?.errorMessage) {
+            message.error(res.data.errorMessage);
+          } else {
+            message.success('清理并重跑完成');
+          }
+          setResultTitle(res.data?.errorMessage ? '清理并重跑失败' : '清理并重跑结果');
+          setResultValue(res.data);
+          setResultOpen(true);
+          await loadData();
+        } finally {
+          setCleanupingRunId(null);
+        }
+      },
+    });
   };
 
   const renderSqlItem = (name: string, label: string, scalar = false) => (
@@ -654,15 +817,51 @@ export default function IncrementalControlDrawer({
                   <div className="grid grid-cols-2 gap-x-4">
                     <Form.Item
                       name="default_params_json"
-                      label="default_params_json"
+                      label="默认运行参数 JSON"
+                      extra={
+                        <div className="text-xs leading-5 text-slate-500">
+                          用于给 HOCON、boundary SQL、check_sql、cleanup_sql 中的普通业务占位符提供默认值。
+                          示例：WHERE factory = <code>{'$' + '{factory}'}</code> AND biz_type ={' '}
+                          <code>{'$' + '{biz_type}'}</code>
+                        </div>
+                      }
+                      rules={[
+                        {
+                          validator: validateJsonObjectField(
+                            'default_params_json',
+                          ),
+                        },
+                      ]}
                     >
-                      <TextArea rows={5} className={compactInput} />
+                      <TextArea
+                        rows={6}
+                        className={compactInput}
+                        placeholder={'{\n  "factory": "FAB1",\n  "biz_type": "ORDER"\n}'}
+                      />
                     </Form.Item>
                     <Form.Item
                       name="custom_context_json"
-                      label="custom_context_json"
+                      label="自定义占位符上下文 JSON"
+                      extra={
+                        <div className="text-xs leading-5 text-slate-500">
+                          用于补充表名、系统名、目录、业务标签等高级变量。
+                          示例：SELECT COUNT(*) FROM <code>{'$' + '{sink_table}'}</code> WHERE batch_id ={' '}
+                          <code>{'$' + '{batch_id}'}</code>
+                        </div>
+                      }
+                      rules={[
+                        {
+                          validator: validateJsonObjectField(
+                            'custom_context_json',
+                          ),
+                        },
+                      ]}
                     >
-                      <TextArea rows={5} className={compactInput} />
+                      <TextArea
+                        rows={6}
+                        className={compactInput}
+                        placeholder={'{\n  "sink_table": "lab_sink_order",\n  "source_system": "oracle"\n}'}
+                      />
                     </Form.Item>
                   </div>
 
@@ -674,26 +873,90 @@ export default function IncrementalControlDrawer({
                     <Switch />
                   </Form.Item>
                   {renderSqlItem('check_sql', 'check_sql')}
+
+                  <Alert
+                    type="warning"
+                    showIcon
+                    className="mb-4"
+                    message="失败后重跑策略"
+                    description="如果 SeaTunnel 已写入目标端但 check_sql 失败，watermark 不会推进。重跑前请清理本批次数据，或确保目标表是 Primary Key / Unique Key / Upsert 幂等表。cleanup_sql 只会在历史详情中手动执行或清理并重跑时执行。"
+                  />
+                  <div className="grid grid-cols-2 gap-x-4">
+                    <Form.Item
+                      name="cleanup_datasource_id"
+                      label="cleanup_datasource_id"
+                    >
+                      <Input className={compactInput} />
+                    </Form.Item>
+                    <Form.Item
+                      name="cleanup_on_rerun"
+                      label="失败重跑时允许 cleanup_sql"
+                      valuePropName="checked"
+                    >
+                      <Switch />
+                    </Form.Item>
+                    <Form.Item
+                      name="cleanup_before_retry_only"
+                      label="仅失败批次重跑前清理"
+                      valuePropName="checked"
+                    >
+                      <Switch />
+                    </Form.Item>
+                  </div>
+                  <Form.Item
+                    name="cleanup_sql"
+                    label="cleanup_sql"
+                    extra="示例：DELETE FROM lab_sink_order WHERE batch_id = '${batch_id}'。可用变量包括 batch_id、run_id、batch_start_value、batch_end_value、task_id、task_code、watermark_key 以及 JSON 参数。"
+                  >
+                    <TextArea
+                      rows={4}
+                      className={compactInput}
+                      placeholder="DELETE FROM lab_sink_order WHERE batch_id = '${batch_id}'"
+                    />
+                  </Form.Item>
                 </Form>
               ),
             },
             {
               key: 'placeholders',
               label: '占位符',
-              disabled: readOnly,
               children: (
-                <Space size={[8, 8]} wrap>
-                  {PLACEHOLDERS.map((item) => (
-                    <Tag
-                      key={item}
-                      icon={<Braces size={12} />}
-                      className="cursor-pointer px-3 py-1 text-sm"
-                      onClick={() => onInsertPlaceholder(item)}
-                    >
-                      {item}
-                    </Tag>
-                  ))}
-                </Space>
+                <div className="space-y-4">
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="可用系统变量说明"
+                    description="系统变量优先级最高，default_params_json 和 custom_context_json 不能覆盖这些 key。"
+                  />
+                  <Table
+                    size="small"
+                    rowKey="name"
+                    dataSource={SYSTEM_VARIABLES}
+                    pagination={false}
+                    columns={[
+                      { title: '变量', dataIndex: 'name' },
+                      { title: '说明', dataIndex: 'desc' },
+                    ]}
+                  />
+                  <Space size={[8, 8]} wrap>
+                    {PLACEHOLDERS.map((item) => (
+                      <Tag
+                        key={item}
+                        icon={<Braces size={12} />}
+                        className={`px-3 py-1 text-sm ${
+                          readOnly ? '' : 'cursor-pointer'
+                        }`}
+                        onClick={() => {
+                          if (!readOnly) {
+                            onInsertPlaceholder(item);
+                          }
+                        }}
+                      >
+                        {item}
+                      </Tag>
+                    ))}
+                  </Space>
+                </div>
               ),
             },
             {
@@ -751,6 +1014,20 @@ export default function IncrementalControlDrawer({
                             {contextPreview.bizDate}
                           </Descriptions.Item>
                         </Descriptions>
+                        <div className="mt-3">
+                          <div className="mb-2 text-sm font-medium text-slate-700">
+                            systemVariables
+                          </div>
+                          <Space size={[6, 6]} wrap>
+                            {(contextPreview.systemVariables || []).map(
+                              (item: string) => (
+                                <Tag key={item} color="blue">
+                                  {item}
+                                </Tag>
+                              ),
+                            )}
+                          </Space>
+                        </div>
                         <div className="mt-3">
                           {jsonBlock(
                             contextPreview.variables || contextPreview,
@@ -862,6 +1139,12 @@ export default function IncrementalControlDrawer({
                       { title: 'trigger', dataIndex: 'triggerType' },
                       { title: 'jobId', dataIndex: 'seatunnelJobId' },
                       {
+                        title: 'mayWrite',
+                        dataIndex: 'targetMayHaveWritten',
+                        render: (value: boolean) =>
+                          value ? <Tag color="orange">可能已写入</Tag> : '-',
+                      },
+                      {
                         title: 'source',
                         dataIndex: 'sourceCount',
                         render: formatNullableCount,
@@ -881,6 +1164,64 @@ export default function IncrementalControlDrawer({
                     expandable={{
                       expandedRowRender: (record: any) => (
                         <div className="space-y-3">
+                          {record.retryRequiresCleanup ? (
+                            <Alert
+                              type="warning"
+                              showIcon
+                              message="目标端可能已经写入，但 watermark 未推进"
+                              description={
+                                record.cleanupHint ||
+                                '重跑前请清理目标端本批次数据，或使用幂等 sink 表。'
+                              }
+                            />
+                          ) : null}
+                          {record.errorMessage ? (
+                            <Alert
+                              type="error"
+                              showIcon
+                              message={record.errorMessage}
+                            />
+                          ) : null}
+                          <Descriptions bordered size="small" column={2}>
+                            <Descriptions.Item label="run_id">
+                              {record.runId || '-'}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="batch_id">
+                              {record.batchId || '-'}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="batch_start_value">
+                              {record.batchStartValue || '-'}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="batch_end_value">
+                              {record.batchEndValue || '-'}
+                            </Descriptions.Item>
+                          </Descriptions>
+                          {record.retryRequiresCleanup && !readOnly ? (
+                            <Space>
+                              <Button
+                                size="small"
+                                loading={cleanupingRunId === record.runId}
+                                onClick={() => copyCleanupSql(record)}
+                              >
+                                复制 cleanup_sql
+                              </Button>
+                              <Button
+                                size="small"
+                                loading={cleanupingRunId === record.runId}
+                                onClick={() => executeCleanupSql(record)}
+                              >
+                                执行 cleanup_sql
+                              </Button>
+                              <Button
+                                size="small"
+                                type="primary"
+                                loading={cleanupingRunId === record.runId}
+                                onClick={() => cleanupAndRerun(record)}
+                              >
+                                清理并重跑
+                              </Button>
+                            </Space>
+                          ) : null}
                           {jsonBlock(record)}
                           <pre className="max-h-[360px] overflow-auto rounded-md border border-slate-200 bg-slate-50 p-3 text-xs">
                             {record.generatedHocon || '未生成'}

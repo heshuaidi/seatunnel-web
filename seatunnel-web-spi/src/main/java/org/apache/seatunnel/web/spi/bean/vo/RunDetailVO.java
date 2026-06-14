@@ -35,6 +35,16 @@ public class RunDetailVO {
 
     private String generatedHocon;
 
+    private Boolean targetMayHaveWritten;
+
+    private Boolean retryRequiresCleanup;
+
+    private String cleanupHint;
+
+    private String cleanupSql;
+
+    private Long cleanupDatasourceId;
+
     private String batchStartValue;
 
     private String batchEndValue;

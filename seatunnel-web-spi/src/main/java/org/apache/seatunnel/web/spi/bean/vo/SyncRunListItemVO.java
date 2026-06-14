@@ -56,4 +56,10 @@ public class SyncRunListItemVO {
     private String errorMessage;
 
     private String generatedHocon;
+
+    private Boolean targetMayHaveWritten;
+
+    private Boolean retryRequiresCleanup;
+
+    private String cleanupHint;
 }

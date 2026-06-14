@@ -67,7 +67,8 @@ public class SyncRunDaoImpl extends BaseDao<SyncRunEntity, SyncRunMapper> implem
         if (status == SyncRunStatus.SUCCESS
                 || status == SyncRunStatus.CHECK_FAILED
                 || status == SyncRunStatus.FAILED
-                || status == SyncRunStatus.CANCELED) {
+                || status == SyncRunStatus.CANCELED
+                || status == SyncRunStatus.SKIPPED) {
             entity.setEndTime(new Date());
         }
         return syncRunMapper.update(

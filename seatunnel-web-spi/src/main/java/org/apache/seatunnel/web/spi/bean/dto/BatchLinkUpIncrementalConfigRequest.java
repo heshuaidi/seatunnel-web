@@ -51,6 +51,14 @@ public class BatchLinkUpIncrementalConfigRequest {
 
     private String checkSql;
 
+    private String cleanupSql;
+
+    private Long cleanupDatasourceId;
+
+    private Boolean cleanupOnRerun;
+
+    private Boolean cleanupBeforeRetryOnly;
+
     private String checkType;
 
     private String checkExpectedOperator;

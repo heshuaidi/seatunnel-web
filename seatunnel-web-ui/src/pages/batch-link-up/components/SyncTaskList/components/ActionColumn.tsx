@@ -258,9 +258,18 @@ const ActionColumn: React.FC<ActionColumnProps> = ({
             result?.runStatus === 'FAILED' ||
             result?.batchStatus === 'FAILED' ||
             result?.jobStatus === 'FAILED';
-          const modal = failed ? Modal.error : Modal.info;
+          const skipped =
+            result?.status === 'SKIPPED' || result?.runStatus === 'SKIPPED';
+          if (skipped) {
+            message.warning('当前任务已有增量运行正在执行，请稍后再试。');
+          }
+          const modal = failed && !skipped ? Modal.error : Modal.info;
           modal({
-            title: failed ? '手动增量运行失败' : '手动增量运行结果',
+            title: skipped
+              ? '手动增量运行已跳过'
+              : failed
+                ? '手动增量运行失败'
+                : '手动增量运行结果',
             centered: true,
             width: 720,
             content: (

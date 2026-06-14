@@ -57,6 +57,14 @@ public class BatchLinkUpIncrementalConfigVO {
 
     private String checkSql;
 
+    private String cleanupSql;
+
+    private Long cleanupDatasourceId;
+
+    private Boolean cleanupOnRerun;
+
+    private Boolean cleanupBeforeRetryOnly;
+
     private String createTime;
 
     private String updateTime;

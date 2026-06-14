@@ -10,6 +10,7 @@ import org.apache.seatunnel.plugin.datasource.api.utils.DataSourceUtils;
 import org.apache.seatunnel.web.api.service.BatchLinkUpIncrementalService;
 import org.apache.seatunnel.web.api.service.DataSourceService;
 import org.apache.seatunnel.web.api.service.HoconRenderService;
+import org.apache.seatunnel.web.api.service.IncrementalTaskLockService;
 import org.apache.seatunnel.web.api.service.SyncAuditService;
 import org.apache.seatunnel.web.api.service.SyncBatchService;
 import org.apache.seatunnel.web.api.service.SyncCheckConfigService;
@@ -18,6 +19,7 @@ import org.apache.seatunnel.web.api.service.SyncIncrementalConfigService;
 import org.apache.seatunnel.web.api.service.SyncRunService;
 import org.apache.seatunnel.web.api.service.SyncWatermarkService;
 import org.apache.seatunnel.web.api.service.SyncZetaClient;
+import org.apache.seatunnel.web.api.service.model.IncrementalLockResult;
 import org.apache.seatunnel.web.api.service.model.SyncJobStatusResult;
 import org.apache.seatunnel.web.api.service.model.SyncSubmitJobResult;
 import org.apache.seatunnel.web.common.constants.SyncConstants;
@@ -110,6 +112,8 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         implements BatchLinkUpIncrementalService {
 
     private static final String DEFAULT_CHECK_CODE = "incremental_default_check";
+    private static final String RETRY_CLEANUP_HINT =
+            "SeaTunnel 写入可能已经发生，但后置校验或运行失败导致 watermark 未推进。重跑前请清理目标端本批次数据，或使用幂等 sink 表。";
     private static final Pattern FORBIDDEN_SQL_PATTERN = Pattern.compile(
             "\\b(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|REPLACE|MERGE|CALL|GRANT|REVOKE)\\b",
             Pattern.CASE_INSENSITIVE
@@ -124,14 +128,21 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
             "run_id",
             "task_id",
             "task_code",
+            "task_name",
             "batch_start_value",
             "batch_end_value",
             "batch_start_time",
             "batch_end_time",
             "watermark_value",
             "watermark_time",
+            "watermark_key",
+            "current_watermark",
+            "previous_watermark",
             "last_success_batch_id",
             "last_success_run_id",
+            "trigger_type",
+            "scheduler_run_id",
+            "seatunnel_job_id",
             "biz_date"
     );
 
@@ -167,6 +178,9 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
 
     @Resource
     private SyncCheckResultService syncCheckResultService;
+
+    @Resource
+    private IncrementalTaskLockService incrementalTaskLockService;
 
     private final HoconRenderService hoconRenderService;
 
@@ -236,6 +250,9 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
                 request == null ? Map.of() : nullToEmpty(request.getParams()),
                 generateBatchId(taskCode(definition)),
                 generateRunId(taskCode(definition)),
+                null,
+                null,
+                null,
                 false
         );
         return context.vo;
@@ -256,6 +273,9 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
                 request == null ? Map.of() : nullToEmpty(request.getParams()),
                 generateBatchId(taskCode(definition)),
                 generateRunId(taskCode(definition)),
+                null,
+                null,
+                null,
                 false
         );
 
@@ -278,9 +298,7 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         JobDefinitionEntity definition = loadDefinition(taskId);
         validateRunnableDefinition(definition);
         SyncIncrementalConfigEntity config = loadEnabledConfig(definition, true);
-        HoconBundle hocon = loadHocon(definition.getId());
         SyncTaskEntity task = toSyncTask(definition, config);
-        SyncTaskVersionEntity version = toSyncVersion(hocon);
         SyncTriggerType triggerType = parseTriggerType(request == null ? null : request.getTriggerType());
         SyncRunMode runMode = parseEnum(
                 SyncRunMode.class,
@@ -290,16 +308,42 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         boolean waitForFinish = request == null
                 || request.getWaitForFinish() == null
                 || Boolean.TRUE.equals(request.getWaitForFinish());
+        String schedulerRunId = request == null ? null : request.getSchedulerRunId();
         Map<String, Object> params = request == null ? Map.of() : nullToEmpty(request.getParams());
         String batchId = generateBatchId(task.getTaskCode());
         String runId = generateRunId(task.getTaskCode());
-        SyncBatchEntity batch = createInitialBatch(task, batchId, triggerType, runMode);
+        String watermarkKey = defaultWatermarkKey(config.getWatermarkKey());
+        IncrementalLockResult lockResult =
+                incrementalTaskLockService.acquireLock(definition.getId(), watermarkKey, runId, batchId);
+        if (!lockResult.isAcquired()) {
+            return createSkippedRunResult(
+                    definition,
+                    task,
+                    batchId,
+                    runId,
+                    triggerType,
+                    runMode,
+                    schedulerRunId,
+                    params,
+                    watermarkKey,
+                    lockResult
+            );
+        }
+
+        HoconBundle hocon = null;
+        SyncTaskVersionEntity version = null;
+        SyncBatchEntity batch = null;
         SyncRunEntity run = null;
         IncrementalContext context = null;
+        boolean releaseLockOnExit = true;
 
         try {
+            hocon = loadHocon(definition.getId());
+            version = toSyncVersion(hocon);
+            batch = createInitialBatch(task, batchId, triggerType, runMode);
             syncAuditService.appendInfo(null, batchId, task.getId(), task.getTaskCode(),
                     SyncAuditEventType.CREATE_BATCH, "Batch-link-up incremental batch created", batch);
+            updateBatchStatus(batch, SyncBatchStatus.PREPARING, null);
 
             run = createRun(
                     task,
@@ -307,13 +351,25 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
                     batch,
                     runId,
                     triggerType,
-                    request == null ? null : request.getSchedulerRunId(),
+                    schedulerRunId,
                     params
             );
             syncAuditService.appendInfo(runId, batchId, task.getId(), task.getTaskCode(),
                     SyncAuditEventType.CREATE_RUN, "Batch-link-up incremental run created", run);
+            updateRunStatus(run, SyncRunStatus.PREPARING, null);
 
-            context = buildContext(definition, config, hocon, params, batchId, runId, true);
+            context = buildContext(
+                    definition,
+                    config,
+                    hocon,
+                    params,
+                    batchId,
+                    runId,
+                    triggerType,
+                    schedulerRunId,
+                    null,
+                    true
+            );
             fillBatchRange(batch, context);
             syncBatchService.update(batch);
             updateBatchStatus(batch, SyncBatchStatus.READY, null);
@@ -338,10 +394,12 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
             syncRunService.updateSeatunnelJob(runId, submitResult.getJobId(), submitResult.getJobName());
             run.setSeatunnelJobId(submitResult.getJobId());
             run.setSeatunnelJobName(submitResult.getJobName());
+            context.variables.put("seatunnel_job_id", submitResult.getJobId());
 
             updateBatchStatus(batch, SyncBatchStatus.SUBMITTED, null);
             updateRunStatus(run, SyncRunStatus.SUBMITTED, null);
             if (!waitForFinish) {
+                releaseLockOnExit = false;
                 return toRunResult(task, version, batch, run, null, false, null, null);
             }
 
@@ -349,7 +407,7 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
             updateRunStatus(run, SyncRunStatus.RUNNING, null);
             SyncJobStatusResult finalStatus = pollUntilFinished(task, batch, run);
             if (!finalStatus.isSuccess()) {
-                String terminalError = terminalErrorMessage(finalStatus);
+                String terminalError = withRetryCleanupHint(terminalErrorMessage(finalStatus), true);
                 SyncRunStatus terminalRunStatus = toRunStatus(finalStatus);
                 SyncBatchStatus terminalBatchStatus = toBatchStatus(finalStatus);
                 updateBatchStatus(batch, terminalBatchStatus, terminalError);
@@ -371,7 +429,10 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
                 IncrementalCheckResult checkResult = executeIncrementalCheckSql(task, batch, run, config, context.variables);
                 applyCheckMetrics(batch, run, checkResult);
                 if (!checkResult.passed) {
-                    String checkError = firstNonBlank(checkResult.message, "Incremental check_sql returned check_passed=false");
+                    String checkError = withRetryCleanupHint(
+                            firstNonBlank(checkResult.message, "Incremental check_sql returned check_passed=false"),
+                            true
+                    );
                     updateBatchStatus(batch, SyncBatchStatus.CHECK_FAILED, checkError);
                     updateRunStatus(run, SyncRunStatus.CHECK_FAILED, checkError);
                     recordWatermarkNotAdvanced(task, batch, run, "check_sql not passed");
@@ -404,10 +465,15 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
                     watermarkResult.errorMessage
             );
         } catch (Exception e) {
-            String message = e.getMessage() == null ? e.toString() : e.getMessage();
+            String message = withRetryCleanupHint(
+                    e.getMessage() == null ? e.toString() : e.getMessage(),
+                    run != null && !isBlank(run.getSeatunnelJobId())
+            );
             log.error("Batch-link-up incremental run failed, taskId={}, batchId={}, runId={}",
                     definition.getId(), batchId, runId, e);
-            updateBatchStatus(batch, SyncBatchStatus.FAILED, message);
+            if (batch != null) {
+                updateBatchStatus(batch, SyncBatchStatus.FAILED, message);
+            }
             if (run != null) {
                 updateRunStatus(run, SyncRunStatus.FAILED, message);
                 recordWatermarkNotAdvanced(task, batch, run, "run failed");
@@ -434,6 +500,21 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
                 );
             }
             throw e instanceof ServiceException ? (ServiceException) e : new ServiceException(message, e);
+        } finally {
+            if (releaseLockOnExit) {
+                boolean released = incrementalTaskLockService.releaseLock(
+                        definition.getId(),
+                        watermarkKey,
+                        lockResult.getLockToken()
+                );
+                if (!released) {
+                    log.warn("Release batch-link-up incremental lock skipped or failed, taskId={}, watermarkKey={}, runId={}",
+                            definition.getId(), watermarkKey, runId);
+                }
+            } else {
+                log.info("Keep batch-link-up incremental lock until TTL because run is async, taskId={}, watermarkKey={}, runId={}",
+                        definition.getId(), watermarkKey, runId);
+            }
         }
     }
 
@@ -477,7 +558,74 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         SyncBatchEntity batch = isBlank(run.getBatchId()) ? null : syncBatchService.getByBatchId(run.getBatchId());
         List<SyncAuditEntity> audits = syncAuditService.listByRunId(run.getRunId());
         List<SyncCheckResultEntity> checkResults = syncCheckResultService.listByRunId(run.getRunId());
-        return toRunDetail(definition, run, batch, audits, checkResults);
+        SyncIncrementalConfigEntity config =
+                syncIncrementalConfigService.getByBatchLinkUpTaskId(definition.getId());
+        return toRunDetail(definition, config, run, batch, audits, checkResults);
+    }
+
+    @Override
+    public BatchLinkUpIncrementalContextVO.SqlExecutionVO previewCleanupSql(Long taskId, String runId) {
+        CleanupRunContext context = buildCleanupRunContext(taskId, runId);
+        return renderCleanupSql(context);
+    }
+
+    @Override
+    public BatchLinkUpIncrementalContextVO.SqlExecutionVO executeCleanupSql(Long taskId, String runId) {
+        CleanupRunContext context = buildCleanupRunContext(taskId, runId);
+        BatchLinkUpIncrementalContextVO.SqlExecutionVO rendered = renderCleanupSql(context);
+        if (Boolean.FALSE.equals(rendered.getSuccess())) {
+            return rendered;
+        }
+        try {
+            QueryResult result = executeStatement("cleanup_sql", rendered.getDatasourceId(), rendered.getRenderedSql());
+            BatchLinkUpIncrementalContextVO.SqlExecutionVO vo = result.toVo();
+            Map<String, Object> detail = new LinkedHashMap<>();
+            detail.put("cleanupDatasourceId", rendered.getDatasourceId());
+            detail.put("updateCount", vo.getScalarValue());
+            syncAuditService.appendInfo(context.run.getRunId(), context.batch.getBatchId(),
+                    context.definition.getId(), taskCode(context.definition),
+                    SyncAuditEventType.VERIFYING,
+                    "Batch-link-up cleanup_sql executed",
+                    detail);
+            return vo;
+        } catch (Exception e) {
+            String message = e.getMessage() == null ? e.toString() : e.getMessage();
+            BatchLinkUpIncrementalContextVO.SqlExecutionVO failed =
+                    new BatchLinkUpIncrementalContextVO.SqlExecutionVO();
+            failed.setName("cleanup_sql");
+            failed.setDatasourceId(rendered.getDatasourceId());
+            failed.setRenderedSql(rendered.getRenderedSql());
+            failed.setSuccess(false);
+            failed.setErrorMessage(message);
+            syncAuditService.appendError(context.run.getRunId(), context.batch.getBatchId(),
+                    context.definition.getId(), taskCode(context.definition),
+                    SyncAuditEventType.RUN_FAILED,
+                    "Batch-link-up cleanup_sql failed",
+                    Map.of("errorMessage", message));
+            return failed;
+        }
+    }
+
+    @Override
+    public RunResultVO cleanupAndRerun(
+            Long taskId,
+            String runId,
+            BatchLinkUpIncrementalRunRequest request
+    ) {
+        BatchLinkUpIncrementalContextVO.SqlExecutionVO cleanupResult = executeCleanupSql(taskId, runId);
+        if (!Boolean.TRUE.equals(cleanupResult.getSuccess())) {
+            throw new ServiceException("cleanup_sql failed: " + cleanupResult.getErrorMessage());
+        }
+        BatchLinkUpIncrementalRunRequest rerunRequest = request == null
+                ? new BatchLinkUpIncrementalRunRequest()
+                : request;
+        if (isBlank(rerunRequest.getTriggerType())) {
+            rerunRequest.setTriggerType(SyncTriggerType.MANUAL.getCode());
+        }
+        if (isBlank(rerunRequest.getRunMode())) {
+            rerunRequest.setRunMode(SyncRunMode.RERUN.getCode());
+        }
+        return runIncremental(taskId, rerunRequest);
     }
 
     @Override
@@ -641,27 +789,61 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         return isBlank(value) ? "test_sql" : value.trim();
     }
 
-    private IncrementalContext buildContext(
+    private BaseContext createBaseContext(
             JobDefinitionEntity definition,
             SyncIncrementalConfigEntity config,
-            HoconBundle hocon,
+            Map<String, ?> lowPriorityParams,
             Map<String, Object> requestParams,
             String batchId,
             String runId,
-            boolean failFast
+            SyncTriggerType triggerType,
+            String schedulerRunId,
+            String seatunnelJobId
     ) {
         SyncWatermarkEntity watermark = syncWatermarkService.getByTaskIdAndWatermarkKey(
                 definition.getId(),
                 defaultWatermarkKey(config.getWatermarkKey())
         );
-        Map<String, Object> variables = new LinkedHashMap<>();
-        Map<String, Object> params = new LinkedHashMap<>(renderScheduleParams(hocon.scheduleConfig));
+        Map<String, Object> params = new LinkedHashMap<>();
+        if (lowPriorityParams != null) {
+            params.putAll(lowPriorityParams);
+        }
         params.putAll(parseJsonMap(config.getDefaultParamsJson()));
-        params.putAll(requestParams == null ? Map.of() : requestParams);
-        List<String> reservedParamConflicts = findReservedParamConflicts(params);
         Map<String, Object> customContext = new LinkedHashMap<>(parseJsonMap(config.getCustomContextJson()));
+        params.putAll(customContext);
+        params.putAll(requestParams == null ? Map.of() : requestParams);
 
-        variables.putAll(params);
+        BaseContext context = new BaseContext();
+        context.watermark = watermark;
+        context.customContext = customContext;
+        context.reservedParamConflicts = findReservedParamConflicts(params);
+        context.variables = new LinkedHashMap<>(params);
+        putSystemVariables(
+                context.variables,
+                definition,
+                config,
+                watermark,
+                batchId,
+                runId,
+                triggerType,
+                schedulerRunId,
+                seatunnelJobId
+        );
+        putCustomVariables(context.variables, customContext);
+        return context;
+    }
+
+    private void putSystemVariables(
+            Map<String, Object> variables,
+            JobDefinitionEntity definition,
+            SyncIncrementalConfigEntity config,
+            SyncWatermarkEntity watermark,
+            String batchId,
+            String runId,
+            SyncTriggerType triggerType,
+            String schedulerRunId,
+            String seatunnelJobId
+    ) {
         variables.put("batch_id", batchId);
         variables.put("run_id", runId);
         variables.put("task_id", definition.getId());
@@ -670,12 +852,44 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         variables.put("watermark_value", watermark == null ? null : watermark.getCurrentValue());
         variables.put("watermark_time", watermark == null ? null : formatDate(watermark.getUpdateTime()));
         variables.put("watermark_key", defaultWatermarkKey(config.getWatermarkKey()));
+        variables.put("current_watermark", watermark == null ? null : watermark.getCurrentValue());
+        variables.put("previous_watermark", watermark == null ? null : watermark.getPreviousValue());
         variables.put("last_success_batch_id", watermark == null ? null : watermark.getLastSuccessBatchId());
         variables.put("last_success_run_id", watermark == null || watermark.getLastSuccessRunId() == null
                 ? null
                 : String.valueOf(watermark.getLastSuccessRunId()));
+        variables.put("trigger_type", code(triggerType));
+        variables.put("scheduler_run_id", schedulerRunId);
+        variables.put("seatunnel_job_id", seatunnelJobId);
         variables.put("biz_date", LocalDate.now().toString());
-        putCustomVariables(variables, customContext);
+    }
+
+    private IncrementalContext buildContext(
+            JobDefinitionEntity definition,
+            SyncIncrementalConfigEntity config,
+            HoconBundle hocon,
+            Map<String, Object> requestParams,
+            String batchId,
+            String runId,
+            SyncTriggerType triggerType,
+            String schedulerRunId,
+            String seatunnelJobId,
+            boolean failFast
+    ) {
+        BaseContext baseContext = createBaseContext(
+                definition,
+                config,
+                renderScheduleParams(hocon.scheduleConfig),
+                requestParams,
+                batchId,
+                runId,
+                triggerType,
+                schedulerRunId,
+                seatunnelJobId
+        );
+        SyncWatermarkEntity watermark = baseContext.watermark;
+        Map<String, Object> variables = baseContext.variables;
+        Map<String, Object> customContext = baseContext.customContext;
 
         BatchLinkUpIncrementalContextVO vo = new BatchLinkUpIncrementalContextVO();
         vo.setBatchId(batchId);
@@ -686,8 +900,8 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         vo.setLastSuccessBatchId(valueToString(variables.get("last_success_batch_id")));
         vo.setLastSuccessRunId(valueToString(variables.get("last_success_run_id")));
         vo.setBizDate(valueToString(variables.get("biz_date")));
-        if (!reservedParamConflicts.isEmpty()) {
-            vo.getDiagnostics().add("用户参数包含系统保留变量，已使用系统值覆盖：" + reservedParamConflicts);
+        if (!baseContext.reservedParamConflicts.isEmpty()) {
+            vo.getDiagnostics().add("用户参数包含系统保留变量，已使用系统值覆盖：" + baseContext.reservedParamConflicts);
         }
 
         Long datasourceId = resolveBoundaryDatasourceId(definition, config);
@@ -759,6 +973,9 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         vo.setCustomContext(customContext);
         removePreparedMarkers(variables);
         vo.setVariables(variables);
+        vo.setSystemVariables(RESERVED_SYSTEM_VARIABLES.stream()
+                .filter(variables::containsKey)
+                .collect(Collectors.toList()));
         vo.setMissingVariables(hoconRenderService.findMissingVariables(hocon.originalHocon, variables));
 
         IncrementalContext context = new IncrementalContext();
@@ -906,6 +1123,75 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         }
     }
 
+    private CleanupRunContext buildCleanupRunContext(Long taskId, String runId) {
+        JobDefinitionEntity definition = loadDefinition(taskId);
+        SyncRunEntity run = syncRunService.getByRunId(runId);
+        if (run == null || !Objects.equals(run.getTaskId(), definition.getId())) {
+            throw new ServiceException("Batch-link-up incremental run not found, taskId="
+                    + taskId
+                    + ", runId="
+                    + runId);
+        }
+        SyncBatchEntity batch = isBlank(run.getBatchId()) ? null : syncBatchService.getByBatchId(run.getBatchId());
+        if (batch == null) {
+            throw new ServiceException("Batch-link-up incremental batch not found, runId=" + runId);
+        }
+        SyncIncrementalConfigEntity config = loadEnabledConfig(definition, false);
+        Map<String, Object> runParams = parseJsonMap(run.getRunParamJson());
+        BaseContext baseContext = createBaseContext(
+                definition,
+                config,
+                Map.of(),
+                runParams,
+                batch.getBatchId(),
+                run.getRunId(),
+                run.getTriggerType(),
+                run.getSchedulerRunId(),
+                run.getSeatunnelJobId()
+        );
+        Map<String, Object> variables = new LinkedHashMap<>(baseContext.variables);
+        variables.put("batch_start_value", batch.getBatchStartValue());
+        variables.put("batch_end_value", batch.getBatchEndValue());
+        variables.put("batch_start_time", formatDate(batch.getBatchStartTime()));
+        variables.put("batch_end_time", formatDate(batch.getBatchEndTime()));
+
+        CleanupRunContext context = new CleanupRunContext();
+        context.definition = definition;
+        context.config = config;
+        context.run = run;
+        context.batch = batch;
+        context.variables = variables;
+        return context;
+    }
+
+    private BatchLinkUpIncrementalContextVO.SqlExecutionVO renderCleanupSql(CleanupRunContext context) {
+        BatchLinkUpIncrementalContextVO.SqlExecutionVO vo =
+                new BatchLinkUpIncrementalContextVO.SqlExecutionVO();
+        vo.setName("cleanup_sql");
+        vo.setDatasourceId(normalizeDatasourceId(context.config.getCleanupDatasourceId()));
+        if (isBlank(context.config.getCleanupSql())) {
+            vo.setSuccess(false);
+            vo.setErrorMessage("cleanup_sql is not configured");
+            return vo;
+        }
+        if (vo.getDatasourceId() == null) {
+            vo.setSuccess(false);
+            vo.setErrorMessage("cleanup_datasource_id is required when cleanup_sql is configured");
+            vo.setRenderedSql(context.config.getCleanupSql());
+            return vo;
+        }
+        try {
+            vo.setRenderedSql(hoconRenderService.render(context.config.getCleanupSql(), context.variables));
+            vo.setSuccess(true);
+            return vo;
+        } catch (Exception e) {
+            vo.setSuccess(false);
+            vo.setRenderedSql(context.config.getCleanupSql());
+            vo.setErrorMessage(e.getMessage() == null ? e.toString() : e.getMessage());
+            return vo;
+        }
+    }
+
     private QueryResult executeQuery(String name, Long datasourceId, String sql, boolean scalar) {
         validateReadOnlySql(sql);
         if (datasourceId == null) {
@@ -955,6 +1241,59 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
             throw e;
         } catch (Exception e) {
             log.error("Execute batch-link-up incremental SQL failed, name={}, datasourceId={}",
+                    name, datasourceId, e);
+            throw new ServiceException("Execute SQL failed, name=" + name + ", error=" + e.getMessage(), e);
+        }
+    }
+
+    private QueryResult executeStatement(String name, Long datasourceId, String sql) {
+        if (isBlank(sql)) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "sql");
+        }
+        if (datasourceId == null) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "datasourceId");
+        }
+        DataSource dataSource = dataSourceService.selectById(datasourceId);
+        try {
+            BaseConnectionParam connectionParam = DataSourceUtils.buildConnectionParams(
+                    dataSource.getDbType(),
+                    dataSource.getConnectionParams()
+            );
+            try (Connection connection = DataSourceUtils
+                    .getDatasourceProcessor(dataSource.getDbType())
+                    .getConnectionManager()
+                    .getConnection(connectionParam);
+                 Statement statement = connection.createStatement()) {
+                statement.setQueryTimeout(syncRunProperties.getCheckSqlTimeoutSeconds());
+                QueryResult result = new QueryResult();
+                result.name = name;
+                result.datasourceId = datasourceId;
+                result.renderedSql = sql;
+                boolean hasResultSet = statement.execute(sql);
+                if (!hasResultSet) {
+                    result.columns.add("update_count");
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("update_count", statement.getUpdateCount());
+                    result.rows.add(row);
+                    result.scalarValue = statement.getUpdateCount();
+                    return result;
+                }
+                try (ResultSet resultSet = statement.getResultSet()) {
+                    ResultSetMetaData metaData = resultSet.getMetaData();
+                    int columnCount = metaData.getColumnCount();
+                    for (int i = 1; i <= columnCount; i++) {
+                        result.columns.add(metaData.getColumnLabel(i));
+                    }
+                    while (resultSet.next()) {
+                        result.rows.add(readRow(resultSet, metaData));
+                    }
+                }
+                return result;
+            }
+        } catch (ServiceException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("Execute batch-link-up incremental statement failed, name={}, datasourceId={}",
                     name, datasourceId, e);
             throw new ServiceException("Execute SQL failed, name=" + name + ", error=" + e.getMessage(), e);
         }
@@ -1141,6 +1480,81 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         raw.put("watermarkAdvanced", false);
         failed.setRawResponse(raw);
         return failed;
+    }
+
+    private SyncJobStatusResult skippedJobStatus(String errorMessage) {
+        SyncJobStatusResult skipped = new SyncJobStatusResult();
+        skipped.setStatus("SKIPPED");
+        skipped.setEndState(true);
+        skipped.setSuccess(false);
+        skipped.setErrorMessage(errorMessage);
+        Map<String, Object> raw = new LinkedHashMap<>();
+        raw.put("errorMessage", errorMessage);
+        raw.put("watermarkAdvanced", false);
+        skipped.setRawResponse(raw);
+        return skipped;
+    }
+
+    private RunResultVO createSkippedRunResult(
+            JobDefinitionEntity definition,
+            SyncTaskEntity task,
+            String batchId,
+            String runId,
+            SyncTriggerType triggerType,
+            SyncRunMode runMode,
+            String schedulerRunId,
+            Map<String, Object> params,
+            String watermarkKey,
+            IncrementalLockResult lockResult
+    ) {
+        HoconBundle hocon = loadHocon(definition.getId());
+        SyncTaskVersionEntity version = toSyncVersion(hocon);
+        SyncBatchEntity batch = createInitialBatch(task, batchId, triggerType, runMode);
+        SyncRunEntity run = createRun(task, version, batch, runId, triggerType, schedulerRunId, params);
+        String message = alreadyRunningMessage(definition.getId(), watermarkKey);
+        updateBatchStatus(batch, SyncBatchStatus.SKIPPED, message);
+        updateRunStatus(run, SyncRunStatus.SKIPPED, message);
+
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("taskId", definition.getId());
+        detail.put("watermarkKey", watermarkKey);
+        detail.put("existingRunId", lockResult.getExistingLock() == null ? null : lockResult.getExistingLock().getRunId());
+        detail.put("existingBatchId", lockResult.getExistingLock() == null ? null : lockResult.getExistingLock().getBatchId());
+        detail.put("expiresAt", lockResult.getExistingLock() == null ? null : formatDate(lockResult.getExistingLock().getExpiresAt()));
+        syncAuditService.appendWarn(runId, batchId, task.getId(), task.getTaskCode(),
+                SyncAuditEventType.RUN_FAILED,
+                "Batch-link-up incremental run skipped because another run is active",
+                detail);
+        log.info("Batch-link-up incremental run skipped, taskId={}, watermarkKey={}, runId={}, batchId={}",
+                definition.getId(), watermarkKey, runId, batchId);
+        return toRunResult(task, version, batch, run, skippedJobStatus(message), false, null, message);
+    }
+
+    private String alreadyRunningMessage(Long taskId, String watermarkKey) {
+        return "Incremental task is already running for taskId=" + taskId
+                + ", watermarkKey=" + defaultWatermarkKey(watermarkKey);
+    }
+
+    private String withRetryCleanupHint(String message, boolean targetMayHaveWritten) {
+        if (!targetMayHaveWritten || isBlank(message) || message.contains(RETRY_CLEANUP_HINT)) {
+            return message;
+        }
+        return message + " " + RETRY_CLEANUP_HINT;
+    }
+
+    private boolean targetMayHaveWritten(SyncRunEntity run) {
+        if (run == null || run.getStatus() == null) {
+            return false;
+        }
+        if (run.getStatus() == SyncRunStatus.CHECK_FAILED) {
+            return true;
+        }
+        return (run.getStatus() == SyncRunStatus.FAILED || run.getStatus() == SyncRunStatus.CANCELED)
+                && !isBlank(run.getSeatunnelJobId());
+    }
+
+    private boolean retryRequiresCleanup(SyncRunEntity run) {
+        return targetMayHaveWritten(run);
     }
 
     private void recordWatermarkNotAdvanced(
@@ -1393,6 +1807,8 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
             SyncIncrementalConfigEntity entity,
             BatchLinkUpIncrementalConfigRequest request
     ) {
+        validateContextJsonField("default_params_json", request.getDefaultParamsJson());
+        validateContextJsonField("custom_context_json", request.getCustomContextJson());
         entity.setTaskId(definition.getId());
         entity.setBatchLinkUpTaskId(definition.getId());
         entity.setSourceType(SyncSourceType.SQL);
@@ -1438,6 +1854,10 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         entity.setCheckEnabled(defaultBoolean(request.getCheckEnabled(), false));
         entity.setCheckDatasourceId(request.getCheckDatasourceId());
         entity.setCheckSql(request.getCheckSql());
+        entity.setCleanupSql(request.getCleanupSql());
+        entity.setCleanupDatasourceId(request.getCleanupDatasourceId());
+        entity.setCleanupOnRerun(defaultBoolean(request.getCleanupOnRerun(), false));
+        entity.setCleanupBeforeRetryOnly(defaultBoolean(request.getCleanupBeforeRetryOnly(), true));
     }
 
     private void upsertDefaultCheckConfig(
@@ -1488,6 +1908,8 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         entity.setSuccessUpdateWatermark(true);
         entity.setCheckEnabled(false);
         entity.setWatermarkKey(SyncConstants.DEFAULT_WATERMARK_KEY);
+        entity.setCleanupOnRerun(false);
+        entity.setCleanupBeforeRetryOnly(true);
         return entity;
     }
 
@@ -1625,6 +2047,10 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         vo.setCheckEnabled(config.getCheckEnabled());
         vo.setCheckDatasourceId(config.getCheckDatasourceId());
         vo.setCheckSql(config.getCheckSql());
+        vo.setCleanupSql(config.getCleanupSql());
+        vo.setCleanupDatasourceId(config.getCleanupDatasourceId());
+        vo.setCleanupOnRerun(config.getCleanupOnRerun());
+        vo.setCleanupBeforeRetryOnly(config.getCleanupBeforeRetryOnly());
         vo.setCreateTime(formatDate(config.getCreateTime()));
         vo.setUpdateTime(formatDate(config.getUpdateTime()));
         return vo;
@@ -1663,11 +2089,15 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         vo.setErrorCount(run.getErrorCount());
         vo.setErrorMessage(run.getErrorMessage());
         vo.setGeneratedHocon(run.getGeneratedHocon());
+        vo.setTargetMayHaveWritten(targetMayHaveWritten(run));
+        vo.setRetryRequiresCleanup(retryRequiresCleanup(run));
+        vo.setCleanupHint(retryRequiresCleanup(run) ? RETRY_CLEANUP_HINT : null);
         return vo;
     }
 
     private RunDetailVO toRunDetail(
             JobDefinitionEntity definition,
+            SyncIncrementalConfigEntity config,
             SyncRunEntity run,
             SyncBatchEntity batch,
             List<SyncAuditEntity> audits,
@@ -1688,6 +2118,11 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         vo.setSeatunnelJobName(run.getSeatunnelJobName());
         vo.setErrorMessage(run.getErrorMessage());
         vo.setGeneratedHocon(run.getGeneratedHocon());
+        vo.setTargetMayHaveWritten(targetMayHaveWritten(run));
+        vo.setRetryRequiresCleanup(retryRequiresCleanup(run));
+        vo.setCleanupHint(retryRequiresCleanup(run) ? RETRY_CLEANUP_HINT : null);
+        vo.setCleanupSql(config == null ? null : config.getCleanupSql());
+        vo.setCleanupDatasourceId(config == null ? null : config.getCleanupDatasourceId());
         vo.setBatchStartValue(batch == null ? null : batch.getBatchStartValue());
         vo.setBatchEndValue(batch == null ? null : batch.getBatchEndValue());
         vo.setBatchStartTime(batch == null ? null : formatDate(batch.getBatchStartTime()));
@@ -1807,6 +2242,9 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         result.setWatermarkAdvanced(watermarkAdvanced);
         result.setWatermarkValue(watermarkValue);
         result.setErrorMessage(firstNonBlank(errorMessage, run.getErrorMessage()));
+        result.setTargetMayHaveWritten(targetMayHaveWritten(run));
+        result.setRetryRequiresCleanup(retryRequiresCleanup(run));
+        result.setCleanupHint(retryRequiresCleanup(run) ? RETRY_CLEANUP_HINT : null);
         return result;
     }
 
@@ -1880,11 +2318,39 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
     }
 
     private Map<String, Object> parseJsonMap(String json) {
+        return parseJsonObject(json, "json");
+    }
+
+    private void validateContextJsonField(String fieldName, String json) {
+        Map<String, Object> parsed = parseJsonObject(json, fieldName);
+        for (String key : parsed.keySet()) {
+            if (isReservedContextKey(key)) {
+                throw new ServiceException(fieldName + " contains reserved key: " + key);
+            }
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> parseJsonObject(String json, String fieldName) {
         if (isBlank(json)) {
             return Collections.emptyMap();
         }
-        Map<String, Object> parsed = JSONUtils.parseObject(json, new TypeReference<Map<String, Object>>() {});
-        return parsed == null ? Collections.emptyMap() : parsed;
+        Object parsed;
+        try {
+            parsed = JSONUtils.parseObject(json, new TypeReference<Object>() {});
+        } catch (IllegalArgumentException e) {
+            throw new ServiceException(fieldName + " invalid JSON object", e);
+        }
+        if (!(parsed instanceof Map)) {
+            throw new ServiceException(fieldName + " must be JSON object");
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        ((Map<Object, Object>) parsed).forEach((key, value) -> {
+            if (key != null) {
+                result.put(String.valueOf(key), value);
+            }
+        });
+        return result;
     }
 
     private void putCustomVariables(Map<String, Object> variables, Map<String, Object> customContext) {
@@ -2002,11 +2468,15 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         }
         List<String> conflicts = new ArrayList<>();
         params.keySet().forEach(key -> {
-            if (key != null && (RESERVED_SYSTEM_VARIABLES.contains(key) || key.startsWith("custom."))) {
+            if (isReservedContextKey(key)) {
                 conflicts.add(key);
             }
         });
         return conflicts;
+    }
+
+    private boolean isReservedContextKey(String key) {
+        return key != null && (RESERVED_SYSTEM_VARIABLES.contains(key) || key.startsWith("custom."));
     }
 
     private String firstNonBlank(String... values) {
@@ -2091,6 +2561,21 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
     private static class IncrementalContext {
         private BatchLinkUpIncrementalContextVO vo;
         private Map<String, Object> variables;
+    }
+
+    private static class BaseContext {
+        private SyncWatermarkEntity watermark;
+        private Map<String, Object> variables = Collections.emptyMap();
+        private Map<String, Object> customContext = Collections.emptyMap();
+        private List<String> reservedParamConflicts = Collections.emptyList();
+    }
+
+    private static class CleanupRunContext {
+        private JobDefinitionEntity definition;
+        private SyncIncrementalConfigEntity config;
+        private SyncRunEntity run;
+        private SyncBatchEntity batch;
+        private Map<String, Object> variables = Collections.emptyMap();
     }
 
     private static class WatermarkAdvanceResult {

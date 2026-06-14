@@ -93,6 +93,31 @@ public class BatchLinkUpIncrementalController {
         return Result.buildSuc(batchLinkUpIncrementalService.getRun(taskId, runId));
     }
 
+    @PostMapping("/incremental-runs/{runId}/preview-cleanup-sql")
+    public Result<BatchLinkUpIncrementalContextVO.SqlExecutionVO> previewCleanupSql(
+            @PathVariable("taskId") Long taskId,
+            @PathVariable("runId") String runId
+    ) {
+        return Result.buildSuc(batchLinkUpIncrementalService.previewCleanupSql(taskId, runId));
+    }
+
+    @PostMapping("/incremental-runs/{runId}/execute-cleanup-sql")
+    public Result<BatchLinkUpIncrementalContextVO.SqlExecutionVO> executeCleanupSql(
+            @PathVariable("taskId") Long taskId,
+            @PathVariable("runId") String runId
+    ) {
+        return Result.buildSuc(batchLinkUpIncrementalService.executeCleanupSql(taskId, runId));
+    }
+
+    @PostMapping("/incremental-runs/{runId}/cleanup-and-rerun")
+    public Result<RunResultVO> cleanupAndRerun(
+            @PathVariable("taskId") Long taskId,
+            @PathVariable("runId") String runId,
+            @RequestBody(required = false) BatchLinkUpIncrementalRunRequest request
+    ) {
+        return Result.buildSuc(batchLinkUpIncrementalService.cleanupAndRerun(taskId, runId, request));
+    }
+
     @GetMapping("/incremental-batches")
     public PaginationResult<SyncBatchListItemVO> listBatches(
             @PathVariable("taskId") Long taskId,
