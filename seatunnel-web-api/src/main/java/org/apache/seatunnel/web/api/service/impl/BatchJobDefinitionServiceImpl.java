@@ -264,14 +264,14 @@ public class BatchJobDefinitionServiceImpl extends BaseServiceImpl implements Ba
 
         ReleaseState currentState = entity.getReleaseState();
 
-        // 状态已经一致时，也顺手同步一下调度状态，避免 Quartz 状态和业务状态不一致
+
         if (releaseState == currentState) {
             syncScheduleState(id, releaseState);
             log.info("Batch job definition release state already synced, id={}, state={}", id, releaseState);
             return true;
         }
 
-        // 下线：先停调度，再更新任务定义状态
+
         if (releaseState.isOffline()) {
             syncScheduleState(id, ReleaseState.OFFLINE);
             updateJobReleaseState(id, ReleaseState.OFFLINE);
@@ -280,7 +280,7 @@ public class BatchJobDefinitionServiceImpl extends BaseServiceImpl implements Ba
             return true;
         }
 
-        // 上线：先更新任务定义状态，再启动调度
+
         if (releaseState.isOnline()) {
             updateJobReleaseState(id, ReleaseState.ONLINE);
             syncScheduleState(id, ReleaseState.ONLINE);
