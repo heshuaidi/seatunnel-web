@@ -181,7 +181,9 @@ public class SyncWatermarkServiceImpl extends SyncServiceSupport implements Sync
                     .lastSuccessBatchId(batchId)
                     .updateTime(now)
                     .build();
-            syncWatermarkDao.insert(entity);
+            if (syncWatermarkDao.insert(entity) <= 0) {
+                throw new ServiceException("Insert sync watermark failed, taskId=" + taskId + ", watermarkKey=" + key);
+            }
             return;
         }
 
@@ -195,7 +197,26 @@ public class SyncWatermarkServiceImpl extends SyncServiceSupport implements Sync
         update.setLastSuccessRunId(runId);
         update.setLastSuccessBatchId(batchId);
         update.setUpdateTime(now);
-        syncWatermarkDao.updateById(update);
+        if (syncWatermarkDao.updateById(update)) {
+            return;
+        }
+
+        SyncWatermarkEntity fallbackInsert = SyncWatermarkEntity.builder()
+                .taskId(taskId)
+                .watermarkKey(key)
+                .currentValue(newValue)
+                .previousValue(existing.getCurrentValue())
+                .currentValueType(existing.getCurrentValueType() != null
+                        ? existing.getCurrentValueType()
+                        : config == null ? null : config.getWatermarkFieldType())
+                .lastSuccessRunId(runId)
+                .lastSuccessBatchId(batchId)
+                .updateTime(now)
+                .build();
+        if (syncWatermarkDao.insert(fallbackInsert) <= 0) {
+            throw new ServiceException("Insert sync watermark after zero-row update failed, taskId="
+                    + taskId + ", watermarkKey=" + key);
+        }
     }
 
     @Override

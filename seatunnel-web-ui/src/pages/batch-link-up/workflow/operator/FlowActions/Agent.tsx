@@ -1,12 +1,12 @@
 import { SyncOutlined } from "@ant-design/icons";
-import { Sender, SenderProps } from "@ant-design/x";
-import { Dropdown, Flex, GetRef, MenuProps, message } from "antd";
+import { Sender, type SenderProps } from "@ant-design/x";
+import { Dropdown, Flex, type GetRef, type MenuProps, message } from "antd";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 import { seatunnelCopilotApi } from "@/pages/batch-link-up/api";
 
 import DeepSeekIcon from "../../icon/DeepSeekIcon";
-import { dataSourceCatalogApi, fetchDataSourceAll, fetchDataSourcePage } from "@/pages/data-source/service";
+import { dataSourceCatalogApi, fetchDataSourceAll } from "@/pages/data-source/service";
 
 const Switch = Sender.Switch;
 
@@ -179,12 +179,15 @@ function useDataSources() {
         }
 
         const list = res?.data || [];
-        const names: string[] = list.map((v: any) => v?.dbName).filter(Boolean);
+        const names: string[] = list
+          .map((v: any) => v?.dbName || v?.name || v?.label)
+          .filter(Boolean);
 
         const map: Record<string, number> = {};
         list.forEach((v: any) => {
-          if (v?.dbName != null && v?.id != null)
-            map[String(v.dbName)] = Number(v.id);
+          const name = v?.dbName || v?.name || v?.label;
+          if (name != null && v?.id != null)
+            map[String(name)] = Number(v.id);
         });
 
         setDbOptions(names);
@@ -270,7 +273,7 @@ const App: React.FC = () => {
   // 1) agent 用 state：切换必更新（✅ 和你第二段一致）
   const [activeAgentKey, setActiveAgentKey] = useState("single_sync");
   const [agentConfig, setAgentConfig] = useState(() =>
-    cloneAgent(AgentInfo["single_sync"])
+    cloneAgent(AgentInfo.single_sync)
   );
 
   // 2) 数据源/表
@@ -313,15 +316,6 @@ const App: React.FC = () => {
   // 5) patch 后的 slotConfig（中英各一份）
   const patchedSlotConfig = useMemo(() => {
     return patchSlotConfig(agentConfig.slotConfig as any[], {
-      sourceDbOptions: dbOptions,
-      sinkDbOptions: dbOptions,
-      tableOptions,
-      tableLoading,
-    });
-  }, [agentConfig, dbOptions, tableOptions, tableLoading]);
-
-  const patchedZhSlotConfig = useMemo(() => {
-    return patchSlotConfig(agentConfig.zh_slotConfig as any[], {
       sourceDbOptions: dbOptions,
       sinkDbOptions: dbOptions,
       tableOptions,

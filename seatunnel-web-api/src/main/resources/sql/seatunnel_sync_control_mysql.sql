@@ -57,6 +57,34 @@ CREATE TABLE IF NOT EXISTS `t_seatunnel_web_sync_incremental_config`
 (
     `id`                         bigint       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
     `task_id`                    bigint       NOT NULL COMMENT '任务ID',
+    `batch_link_up_task_id`       bigint                DEFAULT NULL COMMENT 'batch-link-up 任务定义 ID',
+    `enabled`                    tinyint(1)   NOT NULL DEFAULT 1 COMMENT '是否启用批任务增量控制',
+    `range_type`                 varchar(50)           DEFAULT 'ID_RANGE' COMMENT '边界类型：ID_RANGE / UPDATE_TIME_RANGE / CUSTOM',
+    `boundary_mode`              varchar(50)           DEFAULT 'SEPARATE_SQL' COMMENT '边界获取模式：SEPARATE_SQL / PREPARE_SQL / SIMPLE_WATERMARK',
+    `start_value_source`         varchar(30)           DEFAULT 'WATERMARK' COMMENT 'batch_start_value 来源',
+    `end_value_source`           varchar(30)           DEFAULT 'SQL' COMMENT 'batch_end_value 来源',
+    `start_time_source`          varchar(30)           DEFAULT 'NONE' COMMENT 'batch_start_time 来源',
+    `end_time_source`            varchar(30)           DEFAULT 'NONE' COMMENT 'batch_end_time 来源',
+    `boundary_datasource_id`     bigint                DEFAULT NULL COMMENT '边界 SQL 执行数据源 ID',
+    `batch_prepare_sql`          mediumtext COMMENT '一次性获取边界上下文的 SQL',
+    `batch_start_value_sql`      mediumtext COMMENT '单独获取 batch_start_value 的 SQL',
+    `batch_end_value_sql`        mediumtext COMMENT '单独获取 batch_end_value 的 SQL',
+    `batch_start_time_sql`       mediumtext COMMENT '单独获取 batch_start_time 的 SQL',
+    `batch_end_time_sql`         mediumtext COMMENT '单独获取 batch_end_time 的 SQL',
+    `fixed_start_value`          varchar(500)          DEFAULT NULL COMMENT '固定 batch_start_value',
+    `fixed_end_value`            varchar(500)          DEFAULT NULL COMMENT '固定 batch_end_value',
+    `fixed_start_time`           varchar(100)          DEFAULT NULL COMMENT '固定 batch_start_time',
+    `fixed_end_time`             varchar(100)          DEFAULT NULL COMMENT '固定 batch_end_time',
+    `default_params_json`        mediumtext COMMENT '默认运行参数 JSON',
+    `custom_context_json`        mediumtext COMMENT '自定义上下文 JSON，会展开为 custom.xxx',
+    `success_update_watermark`   tinyint(1)   NOT NULL DEFAULT 1 COMMENT '成功后是否推进 watermark',
+    `check_enabled`              tinyint(1)   NOT NULL DEFAULT 0 COMMENT '是否启用后置校验',
+    `check_datasource_id`        bigint                DEFAULT NULL COMMENT '默认后置校验数据源 ID',
+    `check_sql`                  mediumtext COMMENT '默认后置校验 SQL',
+    `cleanup_sql`                mediumtext COMMENT '失败批次清理 SQL 模板',
+    `cleanup_datasource_id`      bigint                DEFAULT NULL COMMENT '清理 SQL 执行数据源 ID',
+    `cleanup_on_rerun`           tinyint(1)   NOT NULL DEFAULT 0 COMMENT '失败批次重跑前是否执行 cleanup_sql',
+    `cleanup_before_retry_only`  tinyint(1)   NOT NULL DEFAULT 1 COMMENT 'cleanup_sql 是否仅用于失败批次重跑',
     `source_type`                varchar(30)  NOT NULL COMMENT '源类型：JDBC / SQL / LOCAL_FILE / FTP_FILE',
     `strategy`                   varchar(50)  NOT NULL COMMENT '增量策略',
     `watermark_key`              varchar(100) NOT NULL DEFAULT 'default' COMMENT 'watermark key',
@@ -76,6 +104,7 @@ CREATE TABLE IF NOT EXISTS `t_seatunnel_web_sync_incremental_config`
     `update_time`                datetime     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`),
     KEY                          `idx_sync_inc_config_task` (`task_id`),
+    KEY                          `idx_sync_inc_config_batch_link_up` (`batch_link_up_task_id`),
     KEY                          `idx_sync_inc_config_strategy` (`strategy`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='通用增量同步配置表';
 
@@ -96,6 +125,28 @@ CREATE TABLE IF NOT EXISTS `t_seatunnel_web_sync_watermark`
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_sync_task_wm` (`task_id`, `watermark_key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='通用增量同步 watermark 表';
+
+-- =========================================
+-- 通用增量同步 task 分布式锁表
+-- =========================================
+CREATE TABLE IF NOT EXISTS `t_seatunnel_web_sync_task_lock`
+(
+    `id`            bigint       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `task_id`       bigint       NOT NULL COMMENT '任务ID',
+    `watermark_key` varchar(128) NOT NULL DEFAULT 'default' COMMENT 'watermark key',
+    `lock_token`    varchar(128) NOT NULL COMMENT '锁 token',
+    `lock_owner`    varchar(128)          DEFAULT NULL COMMENT '锁 owner',
+    `run_id`        varchar(128)          DEFAULT NULL COMMENT '运行ID',
+    `batch_id`      varchar(128)          DEFAULT NULL COMMENT '批次ID',
+    `locked_at`     datetime     NOT NULL COMMENT '加锁时间',
+    `expires_at`    datetime     NOT NULL COMMENT '过期时间',
+    `status`        varchar(32)           DEFAULT NULL COMMENT '锁状态',
+    `create_time`   datetime     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `update_time`   datetime     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_task_watermark` (`task_id`, `watermark_key`),
+    KEY             `idx_sync_task_lock_expire` (`expires_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='通用增量同步任务锁表';
 
 -- =========================================
 -- 通用增量同步 batch 表

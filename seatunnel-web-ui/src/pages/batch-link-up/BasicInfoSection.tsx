@@ -40,7 +40,6 @@ const AnimatedSyncArrow: React.FC = () => {
 
 const BasicInfoSection: React.FC<TaskDetailPanelProps> = ({ item }) => {
   const intl = useIntl();
-  console.log(item);
 
   return (
     <div className="m-4 rounded bg-white p-4 shadow-[0_2px_6px_#0000000d]">

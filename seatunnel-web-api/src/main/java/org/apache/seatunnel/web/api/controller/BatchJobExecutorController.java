@@ -40,6 +40,17 @@ public class BatchJobExecutorController {
         return Result.buildSuc(jobInstanceId);
     }
 
+    @GetMapping("/execute-original")
+    @Operation(summary = "executeOriginalJob", description = "EXECUTE_JOB_NOTES")
+    @Parameters({
+            @Parameter(name = "jobDefineId", description = "JOB_DEFINITION_ID", required = true)
+    })
+    @ApiException(JOB_DEFINITION_EXECUTE_ERROR)
+    public Result<Long> executeOriginal(@RequestParam("jobDefineId") Long jobDefineId) {
+        Long jobInstanceId = jobExecutorService.jobExecuteOriginal(jobDefineId, RunMode.MANUAL);
+        return Result.buildSuc(jobInstanceId);
+    }
+
     /**
      * Pause / stop a running SeaTunnel job instance.
      */

@@ -12,6 +12,8 @@ import { tags } from "@lezer/highlight";
 interface Props {
   value: string;
   onChange: (value: string) => void;
+  insertText?: string;
+  onInserted?: () => void;
 }
 
 const DEFAULT_TEMPLATE = `env {
@@ -244,7 +246,12 @@ const editorTheme = EditorView.theme({
   },
 });
 
-export default function HoconEditorPanel({ value, onChange }: Props) {
+export default function HoconEditorPanel({
+  value,
+  onChange,
+  insertText,
+  onInserted,
+}: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
 
@@ -310,6 +317,26 @@ export default function HoconEditorPanel({ value, onChange }: Props) {
       });
     }
   }, [value]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+
+    if (!view || !insertText) return;
+
+    const range = view.state.selection.main;
+    view.dispatch({
+      changes: {
+        from: range.from,
+        to: range.to,
+        insert: insertText,
+      },
+      selection: {
+        anchor: range.from + insertText.length,
+      },
+    });
+    view.focus();
+    onInserted?.();
+  }, [insertText]);
 
   return (
     <div className="flex h-full flex-col">

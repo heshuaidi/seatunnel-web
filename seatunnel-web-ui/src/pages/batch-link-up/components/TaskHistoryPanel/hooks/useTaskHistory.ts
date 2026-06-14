@@ -1,6 +1,8 @@
-import { seatunnelJobInstanceApi } from "@/pages/batch-link-up/api";
-import { HistoryItem } from "@/pages/batch-link-up/type";
-import { message } from "antd";
+import {
+  batchLinkUpIncrementalApi,
+  seatunnelJobInstanceApi,
+} from "@/pages/batch-link-up/api";
+import type { HistoryItem } from "@/pages/batch-link-up/type";
 import dayjs from "dayjs";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -11,6 +13,64 @@ interface UseTaskHistoryParams {
   selectedItem: any;
   statusFilter: string;
 }
+
+const incrementalStatusToHistoryStatus = (status?: string) => {
+  const value = String(status || "").toUpperCase();
+  if (value === "SUCCESS") return "FINISHED";
+  if (["FAILED", "CHECK_FAILED"].includes(value)) return "FAILED";
+  if (value === "RUNNING") return "RUNNING";
+  if (["CREATED", "READY", "SUBMITTED", "VERIFYING"].includes(value)) {
+    return "PENDING";
+  }
+  if (["CANCELED", "CANCELLED"].includes(value)) return "CANCELED";
+  return value || "UNKNOWN";
+};
+
+const historyStatusToIncrementalStatus = (status?: string) => {
+  const value = String(status || "").toUpperCase();
+  if (!value || value === "ALL") return undefined;
+  if (value === "FINISHED") return "SUCCESS";
+  return value;
+};
+
+const getHistoryTime = (item: any) =>
+  item?.createTime || item?.submitTime || item?.startTime || item?.endTime || "";
+
+const normalizeNormalHistoryItem = (item: any): HistoryItem => ({
+  ...item,
+  rawId: item?.id,
+  runType: "NORMAL",
+});
+
+const normalizeIncrementalHistoryItem = (
+  item: any,
+  selectedItem: any,
+): HistoryItem => {
+  const status = incrementalStatusToHistoryStatus(item?.status);
+  const createTime = item?.createTime || item?.submitTime || item?.startTime || "";
+  return {
+    ...item,
+    id: `incremental-${item?.runId}`,
+    rawId: item?.id,
+    runType: "INCREMENTAL",
+    runId: item?.runId,
+    batchId: item?.batchId,
+    triggerType: item?.triggerType,
+    schedulerRunId: item?.schedulerRunId,
+    jobName: selectedItem?.jobName || item?.taskCode || "Incremental Run",
+    jobStatus: status,
+    time: createTime,
+    startTime: item?.startTime || item?.submitTime || createTime,
+    endTime: item?.endTime,
+    createTime,
+    runtimeConfig: item?.generatedHocon,
+    generatedHocon: item?.generatedHocon,
+    sourceCount: item?.sourceCount,
+    sinkCount: item?.sinkCount,
+    errorCount: item?.errorCount,
+    errorMessage: item?.errorMessage,
+  };
+};
 
 export const useTaskHistory = ({
   selectedItem,
@@ -87,24 +147,47 @@ export const useTaskHistory = ({
     setLoading(true);
 
     try {
-      const data = await seatunnelJobInstanceApi.page({
-        pageNum: 1,
-        pageSize: 20,
-        jobDefinitionId: selectedItem.id,
-        keyword: debouncedKeyword || undefined,
-        jobStatus:
-          statusFilter && statusFilter !== "all" ? statusFilter : undefined,
-        queryStartTime,
-        queryEndTime,
-      });
+      const [normalRes, incrementalRes] = (await Promise.all([
+        seatunnelJobInstanceApi.page({
+          pageNum: 1,
+          pageSize: 20,
+          jobDefinitionId: selectedItem.id,
+          keyword: debouncedKeyword || undefined,
+          jobStatus:
+            statusFilter && statusFilter !== "all" ? statusFilter : undefined,
+          queryStartTime,
+          queryEndTime,
+        }),
+        batchLinkUpIncrementalApi.listRuns(selectedItem.id, {
+          pageNo: 1,
+          pageSize: 100,
+          keyword: debouncedKeyword || undefined,
+          status: historyStatusToIncrementalStatus(statusFilter),
+          startTime: queryStartTime,
+          endTime: queryEndTime,
+        }),
+      ])) as any[];
 
-      if (data?.code === 0) {
-        setHistoryItems(data?.data?.bizData || []);
-      } else {
-        
-      }
-    } catch (error) {
-      
+      const normalItems =
+        normalRes?.code === 0
+          ? (normalRes?.data?.bizData || []).map(normalizeNormalHistoryItem)
+          : [];
+      const incrementalItems =
+        incrementalRes?.code === 0
+          ? (incrementalRes?.data?.bizData || []).map((item: any) =>
+              normalizeIncrementalHistoryItem(item, selectedItem),
+            )
+          : [];
+
+      setHistoryItems(
+        [...normalItems, ...incrementalItems].sort((left, right) => {
+          const leftTime = dayjs(getHistoryTime(left)).valueOf() || 0;
+          const rightTime = dayjs(getHistoryTime(right)).valueOf() || 0;
+          return rightTime - leftTime;
+        }),
+      );
+    } catch (_error) {
+      setHistoryItems([]);
     } finally {
       setLoading(false);
     }

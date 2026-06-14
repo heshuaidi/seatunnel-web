@@ -1,6 +1,4 @@
 import HttpUtils from '@/utils/HttpUtils';
-import { FormInstance, TablePaginationConfig } from 'antd';
-import { Key } from 'antd/es/table/interface';
 
 export enum Operate {
   Add,
@@ -121,7 +119,11 @@ export const executeApiPrefix = '/api/v1/executor';
 
 export const seatunnelJobExecuteApi = {
   execute: (jobDefineId: any) => {
-    return HttpUtils.get(executeApiPrefix + '/execute?jobDefineId=' + jobDefineId);
+    return HttpUtils.get(`${executeApiPrefix}/execute?jobDefineId=${jobDefineId}`);
+  },
+
+  executeOriginal: (jobDefineId: any) => {
+    return HttpUtils.get(`${executeApiPrefix}/execute-original?jobDefineId=${jobDefineId}`);
   },
 
   pause: (jobInstanceId: any) => {
@@ -166,19 +168,19 @@ const seatunnelJobScheduleApiPrefix = '/api/v1/job/schedule';
 export const seatunnelJobScheduleApi = {
   getLast5ExecutionTimes: (cron: string) => {
     return HttpUtils.get<any[]>(
-      `${seatunnelJobScheduleApiPrefix}/last5-execution-times?cron=` + cron,
+      `${seatunnelJobScheduleApiPrefix}/last5-execution-times?cron=${cron}`,
     );
   },
 
   stopSchedule: (jobScheduleId: string) => {
     return HttpUtils.get<any[]>(
-      `${seatunnelJobScheduleApiPrefix}/stop-schedule?scheduleId=` + jobScheduleId,
+      `${seatunnelJobScheduleApiPrefix}/stop-schedule?scheduleId=${jobScheduleId}`,
     );
   },
 
   startSchedule: (jobScheduleId: string) => {
     return HttpUtils.get<any[]>(
-      `${seatunnelJobScheduleApiPrefix}/start-schedule?scheduleId=` + jobScheduleId,
+      `${seatunnelJobScheduleApiPrefix}/start-schedule?scheduleId=${jobScheduleId}`,
     );
   },
 };
@@ -209,5 +211,97 @@ export const batchJobInstanceApi = {
 
   log: (instanceId: string | number) => {
     return HttpUtils.get(`/api/v1/job/batch-instance/${instanceId}/log`);
+  },
+};
+
+const batchLinkUpIncrementalPrefix = "/api/v1/batch-link-up/tasks";
+
+export interface BatchLinkUpIncrementalSqlTestPayload {
+  datasourceId?: string | number;
+  sql: string;
+  sqlType?: string;
+  fieldName?: string;
+  params?: Record<string, any>;
+  scalar?: boolean;
+}
+
+export const batchLinkUpIncrementalApi = {
+  getConfig: (taskId: string | number) => {
+    return HttpUtils.get(`${batchLinkUpIncrementalPrefix}/${taskId}/incremental-config`);
+  },
+
+  saveConfig: (taskId: string | number, data: any) => {
+    return HttpUtils.put(`${batchLinkUpIncrementalPrefix}/${taskId}/incremental-config`, data);
+  },
+
+  previewContext: (taskId: string | number, data?: any) => {
+    return HttpUtils.post(`${batchLinkUpIncrementalPrefix}/${taskId}/preview-incremental-context`, data || {});
+  },
+
+  previewHocon: (taskId: string | number, data?: any) => {
+    return HttpUtils.post(`${batchLinkUpIncrementalPrefix}/${taskId}/preview-incremental-hocon`, data || {});
+  },
+
+  run: (taskId: string | number, data?: any) => {
+    return HttpUtils.post(`${batchLinkUpIncrementalPrefix}/${taskId}/run-incremental`, data || {});
+  },
+
+  getRun: (taskId: string | number, runId: string) => {
+    return HttpUtils.get(`${batchLinkUpIncrementalPrefix}/${taskId}/incremental-runs/${runId}`);
+  },
+
+  previewCleanupSql: (taskId: string | number, runId: string) => {
+    return HttpUtils.post(
+      `${batchLinkUpIncrementalPrefix}/${taskId}/incremental-runs/${runId}/preview-cleanup-sql`,
+      {},
+    );
+  },
+
+  executeCleanupSql: (taskId: string | number, runId: string) => {
+    return HttpUtils.post(
+      `${batchLinkUpIncrementalPrefix}/${taskId}/incremental-runs/${runId}/execute-cleanup-sql`,
+      {},
+    );
+  },
+
+  cleanupAndRerun: (taskId: string | number, runId: string, data?: any) => {
+    return HttpUtils.post(
+      `${batchLinkUpIncrementalPrefix}/${taskId}/incremental-runs/${runId}/cleanup-and-rerun`,
+      data || {},
+    );
+  },
+
+  listRuns: (taskId: string | number, params?: Record<string, any>) => {
+    const search = new URLSearchParams();
+    Object.entries(params || {}).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== "") {
+        search.set(key, String(value));
+      }
+    });
+    const suffix = search.toString() ? `?${search.toString()}` : "";
+    return HttpUtils.get(`${batchLinkUpIncrementalPrefix}/${taskId}/incremental-runs${suffix}`);
+  },
+
+  listBatches: (taskId: string | number, params?: Record<string, any>) => {
+    const search = new URLSearchParams();
+    Object.entries(params || {}).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== "") {
+        search.set(key, String(value));
+      }
+    });
+    const suffix = search.toString() ? `?${search.toString()}` : "";
+    return HttpUtils.get(`${batchLinkUpIncrementalPrefix}/${taskId}/incremental-batches${suffix}`);
+  },
+
+  getWatermark: (taskId: string | number) => {
+    return HttpUtils.get(`${batchLinkUpIncrementalPrefix}/${taskId}/watermark`);
+  },
+
+  updateWatermark: (taskId: string | number, data: any) => {
+    return HttpUtils.put(`${batchLinkUpIncrementalPrefix}/${taskId}/watermark`, data);
+  },
+
+  testSql: (taskId: string | number, data: BatchLinkUpIncrementalSqlTestPayload) => {
+    return HttpUtils.post(`${batchLinkUpIncrementalPrefix}/${taskId}/test-incremental-sql`, data);
   },
 };

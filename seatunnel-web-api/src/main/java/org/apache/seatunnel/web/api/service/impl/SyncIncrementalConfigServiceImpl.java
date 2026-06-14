@@ -3,6 +3,8 @@ package org.apache.seatunnel.web.api.service.impl;
 import jakarta.annotation.Resource;
 import org.apache.seatunnel.web.api.service.SyncIncrementalConfigService;
 import org.apache.seatunnel.web.common.constants.SyncConstants;
+import org.apache.seatunnel.web.common.enums.SyncBoundaryMode;
+import org.apache.seatunnel.web.common.enums.SyncBoundaryValueSource;
 import org.apache.seatunnel.web.dao.entity.SyncIncrementalConfigEntity;
 import org.apache.seatunnel.web.dao.repository.SyncIncrementalConfigDao;
 import org.springframework.stereotype.Service;
@@ -24,6 +26,30 @@ public class SyncIncrementalConfigServiceImpl
         Date now = now();
         if (isBlank(entity.getWatermarkKey())) {
             entity.setWatermarkKey(SyncConstants.DEFAULT_WATERMARK_KEY);
+        }
+        if (entity.getEnabled() == null) {
+            entity.setEnabled(true);
+        }
+        if (entity.getBoundaryMode() == null) {
+            entity.setBoundaryMode(SyncBoundaryMode.SEPARATE_SQL);
+        }
+        if (entity.getStartValueSource() == null) {
+            entity.setStartValueSource(SyncBoundaryValueSource.WATERMARK);
+        }
+        if (entity.getEndValueSource() == null) {
+            entity.setEndValueSource(SyncBoundaryValueSource.SQL);
+        }
+        if (entity.getStartTimeSource() == null) {
+            entity.setStartTimeSource(SyncBoundaryValueSource.NONE);
+        }
+        if (entity.getEndTimeSource() == null) {
+            entity.setEndTimeSource(SyncBoundaryValueSource.NONE);
+        }
+        if (entity.getSuccessUpdateWatermark() == null) {
+            entity.setSuccessUpdateWatermark(true);
+        }
+        if (entity.getCheckEnabled() == null) {
+            entity.setCheckEnabled(false);
         }
         if (entity.getLookbackSeconds() == null) {
             entity.setLookbackSeconds(0);
@@ -62,6 +88,12 @@ public class SyncIncrementalConfigServiceImpl
     public SyncIncrementalConfigEntity getByTaskId(Long taskId) {
         requireId(taskId);
         return syncIncrementalConfigDao.queryByTaskId(taskId);
+    }
+
+    @Override
+    public SyncIncrementalConfigEntity getByBatchLinkUpTaskId(Long batchLinkUpTaskId) {
+        requireId(batchLinkUpTaskId);
+        return syncIncrementalConfigDao.queryByBatchLinkUpTaskId(batchLinkUpTaskId);
     }
 
     @Override

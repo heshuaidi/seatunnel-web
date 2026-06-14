@@ -4,6 +4,7 @@ import jakarta.annotation.Resource;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.seatunnel.plugin.datasource.api.hocon.DataSourceHoconBuilder;
+import org.apache.seatunnel.web.common.enums.TimeVariableValueType;
 import org.apache.seatunnel.web.core.exceptions.ServiceException;
 import org.apache.seatunnel.web.dao.entity.TimeVariable;
 import org.apache.seatunnel.web.spi.bean.dto.TimeVariableRenderReq;
@@ -12,6 +13,7 @@ import org.apache.seatunnel.web.spi.bean.vo.TimeVariableRenderVO;
 import org.apache.seatunnel.web.spi.enums.Status;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -28,8 +30,13 @@ public class TimeVariableJdbcSqlRenderService {
     private static final Pattern VARIABLE_PATTERN =
             Pattern.compile("\\$\\{(?:var:)?([a-zA-Z][a-zA-Z0-9_]*)}");
 
+    private static final String DEFAULT_TIME_FORMAT = "yyyy-MM-dd HH:mm:ss";
+
     @Resource
     private TimeVariableRenderService timeVariableRenderService;
+
+    @Resource
+    private TimeExpressionEvaluator timeExpressionEvaluator;
 
     public String renderSql(String sql,
                             DataSourceHoconBuilder hoconBuilder,
@@ -78,35 +85,67 @@ public class TimeVariableJdbcSqlRenderService {
             Map<String, TimeVariable> variableNameMap,
             Map<String, JobScheduleConfig.ScheduleParamItem> scheduleParamIdMap) {
 
-        Map<String, String> overrideVariables = new LinkedHashMap<>();
+        Map<String, String> scheduleVariables = renderScheduleParams(scheduleParamIdMap, variableNameMap);
+        Map<String, String> overrideVariables = referencedVariables.stream()
+                .filter(scheduleVariables::containsKey)
+                .collect(Collectors.toMap(
+                        item -> item,
+                        scheduleVariables::get,
+                        (first, second) -> first,
+                        LinkedHashMap::new
+                ));
+        TimeVariableRenderReq req = new TimeVariableRenderReq();
+        req.setContent(sql);
+        req.setOverrideVariables(overrideVariables);
+        return timeVariableRenderService.render(req);
+    }
 
-        for (String variableName : referencedVariables) {
-            TimeVariable variable = variableNameMap.get(variableName);
-            if (variable == null || variable.getId() == null) {
+    public Map<String, String> renderScheduleParams(JobScheduleConfig scheduleConfig) {
+        return renderScheduleParams(
+                buildScheduleParamIdMap(scheduleConfig),
+                loadEnabledVariableNameMap()
+        );
+    }
+
+    private Map<String, String> renderScheduleParams(
+            Map<String, JobScheduleConfig.ScheduleParamItem> scheduleParamIdMap,
+            Map<String, TimeVariable> variableNameMap) {
+
+        if (scheduleParamIdMap == null || scheduleParamIdMap.isEmpty()
+                || variableNameMap == null || variableNameMap.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        Map<String, TimeVariable> variableIdMap = variableNameMap.values()
+                .stream()
+                .filter(item -> item != null && item.getId() != null)
+                .collect(Collectors.toMap(
+                        item -> String.valueOf(item.getId()),
+                        item -> item,
+                        (first, second) -> first,
+                        LinkedHashMap::new
+                ));
+        Map<String, String> result = new LinkedHashMap<>();
+        LocalDateTime baseTime = LocalDateTime.now();
+
+        for (JobScheduleConfig.ScheduleParamItem scheduleParam : scheduleParamIdMap.values()) {
+            if (scheduleParam == null || StringUtils.isBlank(scheduleParam.getParamName())) {
                 continue;
             }
 
-            String variableId = String.valueOf(variable.getId());
-            JobScheduleConfig.ScheduleParamItem scheduleParam = scheduleParamIdMap.get(variableId);
+            String paramName = scheduleParam.getParamName().trim();
+            TimeVariable variable = variableIdMap.get(paramName);
+            if (variable == null) {
+                variable = variableNameMap.get(paramName);
+            }
+            if (variable == null || StringUtils.isBlank(variable.getParamName())) {
+                continue;
+            }
 
-            String expression = resolveScheduleExpression(scheduleParam, variable, variableName);
-
-            /*
-             * 这里重新构造一个变量占位符，让已有 TimeVariableRenderService 去完成表达式渲染。
-             *
-             * 注意：
-             * overrideVariables 的值如果直接传 expression，DefaultTimeVariableRenderService
-             * 会把它当成最终值，不会再次解析 expression。
-             *
-             * 所以这里不要用 overrideVariables 做表达式覆盖。
-             *
-             * 当前更推荐下面 renderSingleExpression 方法。
-             */
+            result.put(variable.getParamName(), renderScheduleParamValue(scheduleParam, variable, baseTime));
         }
 
-        TimeVariableRenderReq req = new TimeVariableRenderReq();
-        req.setContent(sql);
-        return timeVariableRenderService.render(req);
+        return result;
     }
 
     private String renderSqlLiteral(String originalSql,
@@ -220,7 +259,8 @@ public class TimeVariableJdbcSqlRenderService {
                         return true;
                     }
 
-                    return !scheduleParamIdMap.containsKey(String.valueOf(variable.getId()));
+                    return !scheduleParamIdMap.containsKey(String.valueOf(variable.getId()))
+                            && !scheduleParamIdMap.containsKey(variableName);
                 })
                 .collect(Collectors.toList());
 
@@ -253,6 +293,53 @@ public class TimeVariableJdbcSqlRenderService {
         }
 
         return expression.trim();
+    }
+
+    private String renderScheduleParamValue(JobScheduleConfig.ScheduleParamItem scheduleParam,
+                                            TimeVariable variable,
+                                            LocalDateTime baseTime) {
+        if (TimeVariableValueType.FIXED.name().equals(variable.getValueType())) {
+            String value = firstNonBlank(
+                    scheduleParam == null ? null : scheduleParam.getParamValue(),
+                    variable.getDefaultValue()
+            );
+            if (StringUtils.isBlank(value)) {
+                throw new ServiceException(
+                        Status.REQUEST_PARAMS_NOT_VALID_ERROR,
+                        "固定值变量未配置默认值：" + variable.getParamName()
+                );
+            }
+            return value;
+        }
+
+        if (TimeVariableValueType.DYNAMIC.name().equals(variable.getValueType())) {
+            String expression = resolveScheduleExpression(scheduleParam, variable, variable.getParamName());
+            String timeFormat = StringUtils.isNotBlank(variable.getTimeFormat())
+                    ? variable.getTimeFormat()
+                    : DEFAULT_TIME_FORMAT;
+            try {
+                return timeExpressionEvaluator.evaluateToString(expression, timeFormat, baseTime);
+            } catch (Exception e) {
+                throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, e.getMessage());
+            }
+        }
+
+        throw new ServiceException(
+                Status.REQUEST_PARAMS_NOT_VALID_ERROR,
+                "不支持的变量取值方式：" + variable.getValueType()
+        );
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (StringUtils.isNotBlank(value)) {
+                return value.trim();
+            }
+        }
+        return null;
     }
 
     private void validateUnresolvedVariables(TimeVariableRenderVO renderVO) {

@@ -8,6 +8,8 @@ public interface SyncIncrementalConfigDao extends IDao<SyncIncrementalConfigEnti
 
     SyncIncrementalConfigEntity queryByTaskId(Long taskId);
 
+    SyncIncrementalConfigEntity queryByBatchLinkUpTaskId(Long batchLinkUpTaskId);
+
     SyncIncrementalConfigEntity queryByTaskIdAndWatermarkKey(Long taskId, String watermarkKey);
 
     List<SyncIncrementalConfigEntity> listByTaskId(Long taskId);

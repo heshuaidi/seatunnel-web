@@ -1,14 +1,14 @@
-import { history, useLocation, useParams } from "@umijs/max";
-import { Empty, message, Spin } from "antd";
-import { useEffect, useState } from "react";
-import { seatunnelJobDefinitionApi } from "../../api";
+import { history, useLocation, useParams } from '@umijs/max';
+import { Empty, message, Spin } from 'antd';
+import { useEffect, useState } from 'react';
+import { seatunnelJobDefinitionApi } from '../../api';
 import {
-  BasicConfig,
+  type BasicConfig,
   defaultEnvConfig,
-  EnvConfig,
-  ScheduleConfig,
-} from "../../workflow/components/ScheduleConfigContent/types";
-import CustomWorkflow from "./CustomWorkflow";
+  type EnvConfig,
+  type ScheduleConfig,
+} from '../../workflow/components/ScheduleConfigContent/types';
+import CustomWorkflow from './CustomWorkflow';
 
 type CustomBasicConfig = BasicConfig & {
   sourcePluginName?: string;
@@ -17,48 +17,48 @@ type CustomBasicConfig = BasicConfig & {
 
 const defaultScheduleConfig: ScheduleConfig = {
   paramsList: [],
-  instanceGenerateMode: "nextDay",
-  scheduleRunType: "normal",
-  timeoutMode: "system",
+  instanceGenerateMode: 'nextDay',
+  scheduleRunType: 'normal',
+  timeoutMode: 'system',
   timeoutValue: 1,
-  timeoutUnit: "hour",
-  rerunPolicy: "success_or_fail",
+  timeoutUnit: 'hour',
+  rerunPolicy: 'success_or_fail',
   autoRetry: true,
   retryTimes: 1,
   retryInterval: 1,
-  scheduleType: "day",
-  hourMode: "range",
+  scheduleType: 'day',
+  hourMode: 'range',
   hourlyRangeValue: {
-    startTime: "00:00",
+    startTime: '00:00',
     intervalHour: 1,
-    endTime: "23:59",
+    endTime: '23:59',
   },
   hourlyAppointValue: {
     hours: [0],
-    minute: "00",
+    minute: '00',
   },
   dailyValue: {
-    time: "00:17",
+    time: '00:17',
   },
   weeklyValue: {
-    weekdays: ["MON"],
-    time: "00:17",
+    weekdays: ['MON'],
+    time: '00:17',
   },
-  effectType: "forever",
-  cronExpression: "0 17 0 * * ?",
+  effectType: 'forever',
+  cronExpression: '0 17 0 * * ?',
 };
 
 const defaultBasicConfig: CustomBasicConfig = {
-  jobName: "",
-  description: "",
-  clientId: "",
-  mode: "SCRIPT",
-  sourceType: "SOURCE",
-  targetType: "SINK",
-  sourceDataSourceId: "",
-  targetDataSourceId: "",
-  sourcePluginName: "",
-  targetPluginName: "",
+  jobName: '',
+  description: '',
+  clientId: '',
+  mode: 'SCRIPT',
+  sourceType: 'SOURCE',
+  targetType: 'SINK',
+  sourceDataSourceId: '',
+  targetDataSourceId: '',
+  sourcePluginName: '',
+  targetPluginName: '',
 };
 
 const mergeScheduleConfig = (schedule?: any): ScheduleConfig => {
@@ -84,15 +84,11 @@ const mergeScheduleConfig = (schedule?: any): ScheduleConfig => {
   };
 };
 
-const buildInitialScheduleConfigForCreate = (
-  rawData?: any
-): ScheduleConfig => {
+const buildInitialScheduleConfigForCreate = (rawData?: any): ScheduleConfig => {
   return mergeScheduleConfig(rawData?.scheduleConfig || rawData?.schedule);
 };
 
-const buildInitialScheduleConfigForEdit = (
-  editData?: any
-): ScheduleConfig => {
+const buildInitialScheduleConfigForEdit = (editData?: any): ScheduleConfig => {
   return mergeScheduleConfig(editData?.schedule);
 };
 
@@ -110,30 +106,26 @@ const buildInitialEnvConfigForEdit = (editData?: any): EnvConfig => {
   };
 };
 
-const buildInitialBasicConfigForCreate = (
-  rawData?: any
-): CustomBasicConfig => {
+const buildInitialBasicConfigForCreate = (rawData?: any): CustomBasicConfig => {
   return {
     ...defaultBasicConfig,
-    jobName: rawData?.jobName || "",
-    description: rawData?.description || "",
-    clientId: rawData?.clientId ? String(rawData.clientId) : "",
-    mode: "SCRIPT",
+    jobName: rawData?.jobName || '',
+    description: rawData?.description || '',
+    clientId: rawData?.clientId ? String(rawData.clientId) : '',
+    mode: 'SCRIPT',
 
-    sourceType: rawData?.sourceType?.dbType || "SOURCE",
-    targetType: rawData?.targetType?.dbType || "SINK",
+    sourceType: rawData?.sourceType?.dbType || 'SOURCE',
+    targetType: rawData?.targetType?.dbType || 'SINK',
 
-    sourcePluginName: rawData?.sourceType?.pluginName || "",
-    targetPluginName: rawData?.targetType?.pluginName || "",
+    sourcePluginName: rawData?.sourceType?.pluginName || '',
+    targetPluginName: rawData?.targetType?.pluginName || '',
 
-    sourceDataSourceId: rawData?.sourceDataSourceId || rawData?.sourceId || "",
-    targetDataSourceId: rawData?.targetDataSourceId || rawData?.targetId || "",
+    sourceDataSourceId: rawData?.sourceDataSourceId || rawData?.sourceId || '',
+    targetDataSourceId: rawData?.targetDataSourceId || rawData?.targetId || '',
   };
 };
 
-const buildInitialBasicConfigForEdit = (
-  editData?: any
-): CustomBasicConfig => {
+const buildInitialBasicConfigForEdit = (editData?: any): CustomBasicConfig => {
   const basic = editData?.basic || {};
   const workflow = editData?.workflow || {};
   const content = editData?.content || {};
@@ -143,46 +135,46 @@ const buildInitialBasicConfigForEdit = (
 
   return {
     ...defaultBasicConfig,
-    jobName: basic?.jobName || "",
-    description: basic?.jobDesc || basic?.description || "",
-    clientId: basic?.clientId ? String(basic.clientId) : "",
-    mode: "SCRIPT",
+    jobName: basic?.jobName || '',
+    description: basic?.jobDesc || basic?.description || '',
+    clientId: basic?.clientId ? String(basic.clientId) : '',
+    mode: 'SCRIPT',
 
     sourceType:
       workflow?.sourceType?.dbType ||
       source?.dbType ||
       editData?.sourceType?.dbType ||
-      "SOURCE",
+      'SOURCE',
 
     targetType:
       workflow?.targetType?.dbType ||
       target?.dbType ||
       editData?.targetType?.dbType ||
-      "SINK",
+      'SINK',
 
     sourcePluginName:
       workflow?.sourceType?.pluginName ||
       source?.pluginName ||
       editData?.sourceType?.pluginName ||
-      "",
+      '',
 
     targetPluginName:
       workflow?.targetType?.pluginName ||
       target?.pluginName ||
       editData?.targetType?.pluginName ||
-      "",
+      '',
 
     sourceDataSourceId:
       workflow?.sourceDataSourceId ||
       workflow?.sourceId ||
       source?.datasourceId ||
-      "",
+      '',
 
     targetDataSourceId:
       workflow?.targetDataSourceId ||
       workflow?.targetId ||
       target?.datasourceId ||
-      "",
+      '',
   };
 };
 
@@ -201,25 +193,24 @@ const buildPageParamsForEdit = (editData?: any) => {
     content?.hoconContent ||
     editData?.hoconContent ||
     editData?.jobDefinitionInfo?.hoconContent ||
-    "";
+    '';
 
   return {
     id: editData?.id,
-    mode: editData?.mode || basic?.mode || "SCRIPT",
-    jobName: basic?.jobName || "",
-    description: basic?.jobDesc || basic?.description || "",
-    clientId: basic?.clientId || "",
+    releaseState: editData?.releaseState,
+    mode: editData?.mode || basic?.mode || 'SCRIPT',
+    jobName: basic?.jobName || '',
+    description: basic?.jobDesc || basic?.description || '',
+    clientId: basic?.clientId || '',
 
-    sourceType:
-      workflow?.sourceType ||
+    sourceType: workflow?.sourceType ||
       editData?.sourceType || {
         dbType: source?.dbType,
         connectorType: source?.connectorType,
         pluginName: source?.pluginName,
       },
 
-    targetType:
-      workflow?.targetType ||
+    targetType: workflow?.targetType ||
       editData?.targetType || {
         dbType: target?.dbType,
         connectorType: target?.connectorType,
@@ -230,13 +221,13 @@ const buildPageParamsForEdit = (editData?: any) => {
       workflow?.sourceDataSourceId ||
       workflow?.sourceId ||
       source?.datasourceId ||
-      "",
+      '',
 
     targetDataSourceId:
       workflow?.targetDataSourceId ||
       workflow?.targetId ||
       target?.datasourceId ||
-      "",
+      '',
 
     scheduleConfig: schedule,
     workflow: {
@@ -254,10 +245,11 @@ const buildPageParamsForEdit = (editData?: any) => {
 export default function CustomConfigPage() {
   const { id } = useParams<{ id: string }>();
   const location = useLocation();
+  const scene = new URLSearchParams(location.search).get('scene');
 
   const [params, setParams] = useState<any>(null);
   const [scheduleConfig, setScheduleConfig] = useState<ScheduleConfig>(
-    defaultScheduleConfig
+    defaultScheduleConfig,
   );
   const [envConfig, setEnvConfig] = useState<EnvConfig>(defaultEnvConfig);
   const [basicConfig, setBasicConfig] =
@@ -268,7 +260,7 @@ export default function CustomConfigPage() {
     if (!id) return;
 
     const searchParams = new URLSearchParams(location.search);
-    const scene = searchParams.get("scene");
+    const scene = searchParams.get('scene');
     const cacheKey = `batch-link-up-detail-${id}`;
 
     const initCreate = () => {
@@ -286,8 +278,8 @@ export default function CustomConfigPage() {
         setScheduleConfig(buildInitialScheduleConfigForCreate(data));
         setEnvConfig(buildInitialEnvConfigForCreate(data));
       } catch (error) {
-        console.error("解析缓存失败:", error);
-        message.error("读取缓存配置失败");
+        console.error('解析缓存失败:', error);
+        message.error('读取缓存配置失败');
         setParams(null);
       }
     };
@@ -298,7 +290,7 @@ export default function CustomConfigPage() {
 
         const res = await seatunnelJobDefinitionApi.selectEditDetail(id);
         if (res?.code !== 0 || !res?.data) {
-          message.error(res?.message || res?.msg || "获取编辑详情失败");
+          message.error(res?.message || res?.msg || '获取编辑详情失败');
           setParams(null);
           return;
         }
@@ -311,19 +303,19 @@ export default function CustomConfigPage() {
         setEnvConfig(buildInitialEnvConfigForEdit(data));
       } catch (error) {
         console.error(error);
-        message.error("获取编辑详情失败");
+        message.error('获取编辑详情失败');
         setParams(null);
       } finally {
         setLoading(false);
       }
     };
 
-    if (scene === "edit") {
+    if (scene === 'edit') {
       initEdit();
       return;
     }
 
-    if (scene === "create") {
+    if (scene === 'create') {
       initCreate();
       return;
     }
@@ -338,10 +330,10 @@ export default function CustomConfigPage() {
 
   const goBack = () => {
     const searchParams = new URLSearchParams(location.search);
-    const scene = searchParams.get("scene");
+    const scene = searchParams.get('scene');
 
-    if (scene === "edit") {
-      history.push("/sync/batch-link-up");
+    if (scene === 'edit') {
+      history.push('/sync/batch-link-up');
       return;
     }
 
@@ -376,6 +368,7 @@ export default function CustomConfigPage() {
         setScheduleConfig={setScheduleConfig}
         envConfig={envConfig}
         setEnvConfig={setEnvConfig}
+        scene={scene}
       />
     </div>
   );

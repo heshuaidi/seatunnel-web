@@ -1,5 +1,7 @@
 # 增量同步测试台操作说明
 
+> 说明：该页面现在只作为开发诊断入口保留，用于验证旧 sync-control 元数据、内置模板和 lab 场景。正式增量同步主流程请使用 `/sync/batch-link-up` 任务详情里的“增量控制”，完整说明见 `docs/batch-link-up-incremental-control.md`。
+
 页面入口：
 
 ```text
@@ -574,4 +576,3 @@ Runs Tab
 ```
 
 Rerun 会复用原失败 batch 的范围，新建 run 和 batch 记录，不重新计算下一批范围。
-

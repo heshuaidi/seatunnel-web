@@ -76,6 +76,7 @@ export default [
     name: 'sync-control.test-console',
     path: '/sync-control/test-console',
     component: './sync-control/test-console',
+    hideInMenu: true,
   },
   {
     icon: 'bulb',

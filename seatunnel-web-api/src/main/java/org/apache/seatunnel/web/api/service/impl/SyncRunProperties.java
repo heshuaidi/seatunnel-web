@@ -14,4 +14,6 @@ public class SyncRunProperties {
     private long pollTimeoutMs = 600000L;
 
     private int checkSqlTimeoutSeconds = 60;
+
+    private long incrementalLockTtlMinutes = 60L;
 }

@@ -8,6 +8,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
 
@@ -15,6 +16,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @SuppressWarnings({"unchecked", "rawtypes"})
 @Service
@@ -22,6 +25,11 @@ public class SeaTunnelRestClient {
 
     private static final String DEFAULT_FINISHED_JOB_STATE = "UNKNOWABLE";
     private static final String DEFAULT_CONFIG_FILE_NAME = "job.conf";
+    private static final int ERROR_SUMMARY_MAX_LENGTH = 500;
+    private static final Pattern JSON_MESSAGE_PATTERN = Pattern.compile(
+            "\"(?:rootCause|root_cause|exception|errorMessage|error_message|message|cause)\"\\s*:\\s*\"([^\"]+)\"",
+            Pattern.CASE_INSENSITIVE
+    );
 
     private final RestTemplate restTemplate;
     private final SeaTunnelClientResolver seatunnelClientResolver;
@@ -163,13 +171,29 @@ public class SeaTunnelRestClient {
     }
 
     private RuntimeException wrap(Exception e, String hint) {
+        if (e instanceof SeatunnelClientException) {
+            return (SeatunnelClientException) e;
+        }
         if (e instanceof HttpStatusCodeException) {
             HttpStatusCodeException he = (HttpStatusCodeException) e;
+            String body = safe(he.getResponseBodyAsString());
             return new SeatunnelClientException(
-                    hint,
-                    he.getRawStatusCode(),
-                    safe(he.getResponseBodyAsString()),
+                    withSummary(hint, body),
+                    he.getStatusCode().value(),
+                    body,
+                    String.valueOf(he.getResponseHeaders()),
                     he
+            );
+        }
+        if (e instanceof RestClientResponseException) {
+            RestClientResponseException re = (RestClientResponseException) e;
+            String body = safe(re.getResponseBodyAsString());
+            return new SeatunnelClientException(
+                    withSummary(hint, body),
+                    re.getStatusCode().value(),
+                    body,
+                    String.valueOf(re.getResponseHeaders()),
+                    re
             );
         }
 
@@ -183,6 +207,73 @@ public class SeaTunnelRestClient {
 
     private String safe(String value) {
         return value == null ? "" : value;
+    }
+
+    private String withSummary(String hint, String responseBody) {
+        String summary = extractErrorSummary(responseBody);
+        return isBlank(summary) ? hint : hint + ": " + summary;
+    }
+
+    private String extractErrorSummary(String responseBody) {
+        if (isBlank(responseBody)) {
+            return null;
+        }
+        Matcher matcher = JSON_MESSAGE_PATTERN.matcher(responseBody);
+        while (matcher.find()) {
+            String value = extractRootCause(matcher.group(1));
+            if (!isBlank(value)) {
+                return value;
+            }
+        }
+
+        String normalized = extractRootCause(responseBody);
+        if (isBlank(normalized)) {
+            return null;
+        }
+        int accessDeniedIndex = normalized.toLowerCase().indexOf("access denied");
+        if (accessDeniedIndex >= 0) {
+            normalized = normalized.substring(accessDeniedIndex);
+        }
+        return abbreviate(normalized, ERROR_SUMMARY_MAX_LENGTH);
+    }
+
+    private String extractRootCause(String value) {
+        String normalized = normalizeErrorText(value);
+        if (isBlank(normalized)) {
+            return null;
+        }
+        String[] parts = normalized.split("(?i)Caused by:");
+        String deepest = parts.length == 0 ? normalized : parts[parts.length - 1].trim();
+        deepest = deepest.replaceFirst("\\s+at\\s+.+$", "").trim();
+        while (deepest.matches("^((?:[A-Za-z_$][A-Za-z0-9_$]*\\.)+[A-Za-z_$][A-Za-z0-9_$]*|[A-Za-z_$][A-Za-z0-9_$]*(?:Exception|Error|Throwable)):\\s+.*")) {
+            String stripped = deepest.replaceFirst(
+                    "^((?:[A-Za-z_$][A-Za-z0-9_$]*\\.)+[A-Za-z_$][A-Za-z0-9_$]*|[A-Za-z_$][A-Za-z0-9_$]*(?:Exception|Error|Throwable)):\\s+",
+                    ""
+            ).trim();
+            if (stripped.equals(deepest)) {
+                break;
+            }
+            deepest = stripped;
+        }
+        return abbreviate(deepest, ERROR_SUMMARY_MAX_LENGTH);
+    }
+
+    private String normalizeErrorText(String value) {
+        if (value == null) {
+            return null;
+        }
+        return value.replace("\\n", " ")
+                .replace("\\r", " ")
+                .replace("\\\"", "\"")
+                .replaceAll("\\s+", " ")
+                .trim();
+    }
+
+    private String abbreviate(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, maxLength) + "...";
     }
 
     /* ===================== GET ===================== */

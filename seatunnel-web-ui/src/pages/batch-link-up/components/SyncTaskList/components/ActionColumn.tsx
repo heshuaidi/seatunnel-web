@@ -7,15 +7,16 @@ import {
   EyeOutlined,
   PauseCircleOutlined,
   PlayCircleOutlined,
-} from "@ant-design/icons";
-import { useIntl } from "@umijs/max";
-import { Dropdown, Modal, Popconfirm, Space, message } from "antd";
-import { useRef, useState } from "react";
+} from '@ant-design/icons';
+import { useIntl } from '@umijs/max';
+import { Dropdown, Modal, Popconfirm, Space, message } from 'antd';
+import { useRef, useState } from 'react';
 import {
+  batchLinkUpIncrementalApi,
   seatunnelJobDefinitionApi,
   seatunnelJobExecuteApi,
-} from "../../../api";
-import TaskViewModal from "../../../TaskViewModal";
+} from '../../../api';
+import TaskViewModal from '../../../TaskViewModal';
 
 interface ActionColumnProps {
   record: any;
@@ -26,7 +27,7 @@ interface ActionColumnProps {
 const { confirm } = Modal;
 
 const actionBaseClass =
-  "inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-xs font-medium transition-all duration-150";
+  'inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-xs font-medium transition-all duration-150';
 
 const primaryActionClass = `${actionBaseClass} bg-[#eef3ff] text-[#3157d5] hover:bg-[#e1e9ff] hover:text-[#2448c2]`;
 
@@ -37,10 +38,10 @@ const secondaryActionClass = `${actionBaseClass} bg-transparent text-slate-600 h
 const disabledActionClass = `${actionBaseClass} cursor-not-allowed bg-slate-100 text-slate-400`;
 
 const moreActionClass =
-  "inline-flex h-7 items-center gap-1 rounded-full px-2 text-xs font-medium text-slate-500 transition-all duration-150 hover:bg-slate-100 hover:text-slate-800";
+  'inline-flex h-7 items-center gap-1 rounded-full px-2 text-xs font-medium text-slate-500 transition-all duration-150 hover:bg-slate-100 hover:text-slate-800';
 
 const isReleaseOnline = (releaseState?: string | number) => {
-  return releaseState === "ONLINE" || releaseState === 1;
+  return releaseState === 'ONLINE' || releaseState === 1;
 };
 
 const ActionColumn: React.FC<ActionColumnProps> = ({
@@ -56,7 +57,7 @@ const ActionColumn: React.FC<ActionColumnProps> = ({
   const [runLoading, setRunLoading] = useState(false);
 
   const isOnline = isReleaseOnline(record?.releaseState);
-  const isRunning = record?.lastJobStatus === "RUNNING";
+  const isRunning = record?.lastJobStatus === 'RUNNING';
 
   const canRun = isOnline && !isRunning;
 
@@ -75,16 +76,16 @@ const ActionColumn: React.FC<ActionColumnProps> = ({
     const instanceId = record?.instanceId;
 
     if (instanceId === undefined || instanceId === null) {
-      message.error("任务实例 ID 不存在");
+      message.error('任务实例 ID 不存在');
       return;
     }
 
     seatunnelJobExecuteApi.pause(instanceId).then((data) => {
       if (data?.code === 0) {
-        message.success("停止成功");
+        message.success('停止成功');
         cbk();
       } else {
-        message.error(data?.msg || "停止失败");
+        message.error(data?.msg || '停止失败');
         cbk();
       }
     });
@@ -92,99 +93,99 @@ const ActionColumn: React.FC<ActionColumnProps> = ({
 
   const handleOnline = async () => {
     if (!record?.id) {
-      message.error("任务 ID 不存在");
+      message.error('任务 ID 不存在');
       return;
     }
 
     const response = await seatunnelJobDefinitionApi.online(record.id);
 
     if (response?.code === 0) {
-      message.success("上线成功");
+      message.success('上线成功');
       cbk();
       return;
     }
 
-    message.error(response?.msg || response?.message || "上线失败");
+    message.error(response?.msg || response?.message || '上线失败');
   };
 
   const handleOffline = async () => {
     if (isRunning) {
-      message.warning("任务正在运行中，请先停止任务后再下线");
+      message.warning('任务正在运行中，请先停止任务后再下线');
       return;
     }
 
     if (!record?.id) {
-      message.error("任务 ID 不存在");
+      message.error('任务 ID 不存在');
       return;
     }
 
     const response = await seatunnelJobDefinitionApi.offline(record.id);
 
     if (response?.code === 0) {
-      message.success("下线成功");
+      message.success('下线成功');
       cbk();
       return;
     }
 
-    message.error(response?.msg || response?.message || "下线失败");
+    message.error(response?.msg || response?.message || '下线失败');
   };
 
   const doDeleteTask = async (id: string | number) => {
-    const response = await seatunnelJobDefinitionApi.delete(id);
+    const response = await seatunnelJobDefinitionApi.delete(String(id));
 
     if (response?.code === 0) {
-      message.success(response?.msg || "删除成功");
+      message.success(response?.msg || '删除成功');
       cbk();
     } else {
-      message.error(response?.msg || response?.message || "删除失败");
+      message.error(response?.msg || (response as any)?.message || '删除失败');
     }
   };
 
   const handleDeleteTask = async () => {
     if (!canDelete) {
       if (isOnline) {
-        message.warning("任务已上线，请先下线后再删除");
+        message.warning('任务已上线，请先下线后再删除');
         return;
       }
 
       if (isRunning) {
-        message.warning("任务正在运行中，请先停止后再删除");
+        message.warning('任务正在运行中，请先停止后再删除');
         return;
       }
     }
 
     confirm({
       title: intl.formatMessage({
-        id: "pages.job.action.delete.confirmTitle",
-        defaultMessage: "Confirm delete?",
+        id: 'pages.job.action.delete.confirmTitle',
+        defaultMessage: 'Confirm delete?',
       }),
       centered: true,
       content: (
         <span>
           {intl.formatMessage(
             {
-              id: "pages.job.action.delete.confirmContent",
+              id: 'pages.job.action.delete.confirmContent',
               defaultMessage:
-                "Are you sure you want to delete the task [{name}]?",
+                'Are you sure you want to delete the task [{name}]?',
             },
             {
-              name: <span style={{ color: "orange" }}>{record?.jobName}</span>,
-            }
+              name: <span style={{ color: 'orange' }}>{record?.jobName}</span>,
+            },
           )}
           <br />
         </span>
       ),
       okText: intl.formatMessage({
-        id: "pages.job.action.delete.okText",
-        defaultMessage: "Delete",
+        id: 'pages.job.action.delete.okText',
+        defaultMessage: 'Delete',
       }),
-      okType: "primary",
+      okType: 'primary',
       okButtonProps: {
-        size: "small",
+        size: 'small',
         danger: true,
       },
       cancelButtonProps: {
-        size: "small",
+        size: 'small',
       },
       maskClosable: true,
       onOk() {
@@ -193,9 +194,9 @@ const ActionColumn: React.FC<ActionColumnProps> = ({
         } else {
           message.error(
             intl.formatMessage({
-              id: "pages.job.message.idNotExist",
-              defaultMessage: "id is not exist",
-            })
+              id: 'pages.job.message.idNotExist',
+              defaultMessage: 'id is not exist',
+            }),
           );
         }
       },
@@ -205,18 +206,18 @@ const ActionColumn: React.FC<ActionColumnProps> = ({
   const handleEdit = async () => {
     if (!canEdit) {
       if (isOnline) {
-        message.warning("任务已上线，请先下线后再编辑");
+        message.warning('任务已上线，请先下线后再编辑');
         return;
       }
 
       if (isRunning) {
-        message.warning("任务正在运行中，请先停止后再编辑");
+        message.warning('任务正在运行中，请先停止后再编辑');
         return;
       }
     }
 
     if (!record?.id) {
-      message.error("任务 ID 不存在");
+      message.error('任务 ID 不存在');
       return;
     }
 
@@ -225,73 +226,142 @@ const ActionColumn: React.FC<ActionColumnProps> = ({
     if (data?.code === 0) {
       goDetail(record.id, record);
     } else {
-      message.error(data?.msg || data?.message || "获取任务详情失败");
+      message.error(data?.msg || data?.message || '获取任务详情失败');
     }
+  };
+
+  const handleRunIncremental = () => {
+    if (!isOnline) {
+      message.warning('任务上线后才能手动增量运行。');
+      return;
+    }
+    if (!record?.id) {
+      message.error('任务 ID 不存在');
+      return;
+    }
+
+    confirm({
+      title: '手动增量运行',
+      centered: true,
+      content: '将使用当前 ONLINE 任务配置生成增量批次并提交运行，确认执行吗？',
+      okText: '运行',
+      cancelText: '取消',
+      onOk: async () => {
+        const response = (await batchLinkUpIncrementalApi.run(record.id, {
+          waitForFinish: true,
+        })) as any;
+        if (response?.code === 0) {
+          const result = response?.data || {};
+          const failed =
+            result?.errorMessage ||
+            result?.status === 'FAILED' ||
+            result?.runStatus === 'FAILED' ||
+            result?.batchStatus === 'FAILED' ||
+            result?.jobStatus === 'FAILED';
+          const skipped =
+            result?.status === 'SKIPPED' || result?.runStatus === 'SKIPPED';
+          if (skipped) {
+            message.warning('当前任务已有增量运行正在执行，请稍后再试。');
+          }
+          const modal = failed && !skipped ? Modal.error : Modal.info;
+          modal({
+            title: skipped
+              ? '手动增量运行已跳过'
+              : failed
+                ? '手动增量运行失败'
+                : '手动增量运行结果',
+            centered: true,
+            width: 720,
+            content: (
+              <div>
+                {result?.errorMessage ? (
+                  <div className="mb-3 text-sm text-red-600">
+                    {result.errorMessage}
+                  </div>
+                ) : null}
+                <pre className="max-h-[420px] overflow-auto rounded-md border border-slate-200 bg-slate-950 p-3 text-xs leading-5 text-slate-100">
+                  {JSON.stringify(result, null, 2)}
+                </pre>
+              </div>
+            ),
+          });
+          cbk();
+          return;
+        }
+        message.error(response?.msg || response?.message || '手动增量运行失败');
+      },
+    });
   };
 
   const handleMenuClick = (info: any) => {
     info.domEvent.stopPropagation();
 
-    if (info?.key === "view") {
+    if (info?.key === 'view') {
       ref.current?.onOpen(true, record, cbk);
       return;
     }
 
-    if (info?.key === "edit") {
+    if (info?.key === 'edit') {
       handleEdit();
       return;
     }
 
-    if (info?.key === "delete") {
+    if (info?.key === 'delete') {
       handleDeleteTask();
+      return;
+    }
+
+    if (info?.key === 'runIncremental') {
+      handleRunIncremental();
     }
   };
 
   const yesText = intl.formatMessage({
-    id: "pages.common.yes",
-    defaultMessage: "Yes",
+    id: 'pages.common.yes',
+    defaultMessage: 'Yes',
   });
 
   const noText = intl.formatMessage({
-    id: "pages.common.no",
-    defaultMessage: "No",
+    id: 'pages.common.no',
+    defaultMessage: 'No',
   });
 
-  const menuItems = [
-    {
-      key: "view",
-      icon: <EyeOutlined />,
-      label: (
-        <span style={{ fontWeight: 500 }}>
-          查看详情
-        </span>
-      ),
-    },
-    {
-      key: "edit",
-      icon: <EditOutlined />,
-      label: (
-        <span style={{ fontWeight: 500 }}>
-          编辑配置
-        </span>
-      ),
-      disabled: !canEdit,
-    },
-    {
-      type: "divider" as const,
-    },
-    {
-      key: "delete",
-      icon: <DeleteOutlined />,
-      label: (
-        <span style={{ fontWeight: 500 }}>
-          删除任务
-        </span>
-      ),
-      danger: true,
-      disabled: !canDelete,
-    },
-  ];
+  const menuItems = isOnline
+    ? [
+        {
+          key: 'view',
+          icon: <EyeOutlined />,
+          label: <span style={{ fontWeight: 500 }}>查看详情</span>,
+        },
+        {
+          key: 'runIncremental',
+          icon: <PlayCircleOutlined />,
+          label: <span style={{ fontWeight: 500 }}>手动增量运行</span>,
+        },
+      ]
+    : [
+        {
+          key: 'view',
+          icon: <EyeOutlined />,
+          label: <span style={{ fontWeight: 500 }}>查看详情</span>,
+        },
+        {
+          key: 'edit',
+          icon: <EditOutlined />,
+          label: <span style={{ fontWeight: 500 }}>编辑配置</span>,
+          disabled: !canEdit,
+        },
+        {
+          type: 'divider' as const,
+        },
+        {
+          key: 'delete',
+          icon: <DeleteOutlined />,
+          label: <span style={{ fontWeight: 500 }}>删除任务</span>,
+          danger: true,
+          disabled: !canDelete,
+        },
+      ];
 
   return (
     <>
@@ -299,14 +369,14 @@ const ActionColumn: React.FC<ActionColumnProps> = ({
         {isRunning ? (
           <Popconfirm
             title={intl.formatMessage({
-              id: "pages.job.action.stop.title",
-              defaultMessage: "Stop Task",
+              id: 'pages.job.action.stop.title',
+              defaultMessage: 'Stop Task',
             })}
             description={
               <div style={{ marginRight: 12 }}>
                 {intl.formatMessage({
-                  id: "pages.job.action.stop.desc",
-                  defaultMessage: "Are you sure stop this job?",
+                  id: 'pages.job.action.stop.desc',
+                  defaultMessage: 'Are you sure stop this job?',
                 })}
               </div>
             }
@@ -326,13 +396,13 @@ const ActionColumn: React.FC<ActionColumnProps> = ({
         ) : (
           <Popconfirm
             title={intl.formatMessage({
-              id: "pages.job.action.run.title",
-              defaultMessage: "Run Task",
+              id: 'pages.job.action.run.title',
+              defaultMessage: 'Run Task',
             })}
             open={canRun ? runOpen : false}
             onOpenChange={(open) => {
               if (!canRun) {
-                message.warning("请先上线任务，再执行运行操作");
+                message.warning('请先上线任务，再执行运行操作');
                 return;
               }
 
@@ -344,8 +414,8 @@ const ActionColumn: React.FC<ActionColumnProps> = ({
             description={
               <div style={{ marginRight: 12 }}>
                 {intl.formatMessage({
-                  id: "pages.job.action.run.desc",
-                  defaultMessage: "Are you sure to run this job?",
+                  id: 'pages.job.action.run.desc',
+                  defaultMessage: 'Are you sure to run this job?',
                 })}
               </div>
             }
@@ -353,7 +423,7 @@ const ActionColumn: React.FC<ActionColumnProps> = ({
             cancelText={noText}
             onConfirm={async () => {
               if (!canRun) {
-                message.warning("请先上线任务，再执行运行操作");
+                message.warning('请先上线任务，再执行运行操作');
                 return;
               }
 
@@ -365,14 +435,14 @@ const ActionColumn: React.FC<ActionColumnProps> = ({
                 if (data?.code === 0) {
                   message.success(
                     intl.formatMessage({
-                      id: "pages.common.success",
-                      defaultMessage: "Success",
-                    })
+                      id: 'pages.common.success',
+                      defaultMessage: 'Success',
+                    }),
                   );
                   cbk();
                   setRunOpen(false);
                 } else {
-                  message.error(data?.msg || "运行失败");
+                  message.error(data?.msg || '运行失败');
                 }
               } finally {
                 setRunLoading(false);
@@ -387,7 +457,7 @@ const ActionColumn: React.FC<ActionColumnProps> = ({
                 event.stopPropagation();
 
                 if (!canRun) {
-                  message.warning("请先上线任务，再执行运行操作");
+                  message.warning('请先上线任务，再执行运行操作');
                 }
               }}
             >
@@ -446,7 +516,7 @@ const ActionColumn: React.FC<ActionColumnProps> = ({
         )}
 
         <Dropdown
-          trigger={["click"]}
+          trigger={['click']}
           menu={{
             items: menuItems,
             onClick: handleMenuClick,

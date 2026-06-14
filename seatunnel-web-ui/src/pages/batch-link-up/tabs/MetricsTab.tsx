@@ -25,7 +25,7 @@ interface SparkLineProps {
 
 interface MetricCardProps {
   title: string;
-  value: number;
+  value: number | null;
   unit: string;
   hint: string;
   icon: React.ReactNode;
@@ -34,17 +34,26 @@ interface MetricCardProps {
 }
 
 const toNumber = (value: any) => {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
   const n = Number(value ?? 0);
-  return Number.isFinite(n) ? n : 0;
+  return Number.isFinite(n) ? n : null;
 };
 
 const formatNumber = (value: any) => {
   const n = toNumber(value);
+  if (n === null) {
+    return "未获取";
+  }
   return n.toLocaleString();
 };
 
 const formatDecimal = (value: any) => {
   const n = toNumber(value);
+  if (n === null) {
+    return "未获取";
+  }
 
   if (n === 0) {
     return "0";
@@ -139,6 +148,8 @@ const SparkLine: React.FC<SparkLineProps> = ({ data }) => {
 
   return (
     <svg
+      aria-hidden="true"
+      focusable="false"
       width="100%"
       height="40"
       viewBox="0 0 100 40"
@@ -176,7 +187,11 @@ const MetricCard: React.FC<MetricCardProps> = ({
 
           <div className="mt-3 flex items-end gap-1.5">
             <span className="text-[28px] font-semibold leading-none tracking-[-0.04em] text-slate-950">
-              <CountUp end={value} duration={1.1} separator="," decimals={0} />
+              {value === null ? (
+                "未获取"
+              ) : (
+                <CountUp end={value} duration={1.1} separator="," decimals={0} />
+              )}
             </span>
             <span className="pb-0.5 text-xs font-medium text-slate-400">
               {unit}
@@ -232,7 +247,10 @@ const SectionHeader: React.FC<{
   );
 };
 
-const buildTrend = (value: number, seed = 1) => {
+const buildTrend = (value: number | null, seed = 1) => {
+  if (value === null) {
+    return [0, 0];
+  }
   const base = Math.max(value, 1);
 
   return Array.from({ length: 12 }, (_, index) => {
@@ -276,7 +294,7 @@ const MetricsTab: React.FC<MetricsTabProps> = ({ instanceItem }) => {
         if (!cancelled) {
           setTableMetrics(list);
         }
-      } catch (error) {
+      } catch (_error) {
         if (!cancelled) {
           setTableMetrics([]);
           message.warning("表级指标加载失败，请稍后重试");
