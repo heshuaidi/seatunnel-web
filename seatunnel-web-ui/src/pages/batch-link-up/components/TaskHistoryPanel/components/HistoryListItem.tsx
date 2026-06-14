@@ -56,17 +56,30 @@ const HistoryListItem: React.FC<HistoryListItemProps> = ({
                 {item.jobName || "-"}
               </Typography.Text>
 
-              <Tag
-                color={meta.tagColor as any}
-                className="!mr-0 !rounded-[10px] !px-2"
-              >
-                {meta.text}
-              </Tag>
+              <div className="flex shrink-0 items-center gap-1">
+                {item.runType ? (
+                  <Tag className="!mr-0 !rounded-[10px] !px-2">
+                    {item.runType}
+                  </Tag>
+                ) : null}
+                {item.triggerType ? (
+                  <Tag color="blue" className="!mr-0 !rounded-[10px] !px-2">
+                    {item.triggerType}
+                  </Tag>
+                ) : null}
+                <Tag
+                  color={meta.color as any}
+                  className="!mr-0 !rounded-[10px] !px-2"
+                >
+                  {meta.text}
+                </Tag>
+              </div>
             </div>
 
             <div className="mt-1.5 text-xs leading-5 text-slate-400">
-              <div>{item.startTime || "-"}</div>
+              <div>{item.startTime || item.createTime || "-"}</div>
               {item.endTime ? <div>{item.endTime}</div> : null}
+              {item.runId ? <div className="truncate">{item.runId}</div> : null}
             </div>
           </div>
         </div>

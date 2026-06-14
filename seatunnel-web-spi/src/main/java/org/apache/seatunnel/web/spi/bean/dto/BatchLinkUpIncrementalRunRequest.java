@@ -14,4 +14,6 @@ public class BatchLinkUpIncrementalRunRequest {
     private String triggerType;
 
     private String runMode;
+
+    private String schedulerRunId;
 }

@@ -17,7 +17,11 @@ public class RunDetailVO {
 
     private Long taskVersionId;
 
+    private String runType;
+
     private String triggerType;
+
+    private String schedulerRunId;
 
     private String runStatus;
 
@@ -30,6 +34,14 @@ public class RunDetailVO {
     private String errorMessage;
 
     private String generatedHocon;
+
+    private String batchStartValue;
+
+    private String batchEndValue;
+
+    private String batchStartTime;
+
+    private String batchEndTime;
 
     private Long sourceCount;
 
@@ -48,4 +60,6 @@ public class RunDetailVO {
     private String endTime;
 
     private List<SyncAuditItemVO> audits;
+
+    private List<SyncCheckResultVO> checkResults;
 }

@@ -3,17 +3,24 @@ package org.apache.seatunnel.web.api.service.impl;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.seatunnel.web.api.metrics.BatchJobSubmitter;
+import org.apache.seatunnel.web.api.service.BatchLinkUpIncrementalService;
 import org.apache.seatunnel.web.api.service.BatchJobDefinitionService;
 import org.apache.seatunnel.web.api.service.BatchJobExecutorService;
 import org.apache.seatunnel.web.api.service.BatchJobInstanceService;
+import org.apache.seatunnel.web.api.service.SyncIncrementalConfigService;
 import org.apache.seatunnel.web.common.enums.JobStatus;
 import org.apache.seatunnel.web.common.enums.ReleaseState;
 import org.apache.seatunnel.web.common.enums.RunMode;
+import org.apache.seatunnel.web.common.enums.SyncRunMode;
+import org.apache.seatunnel.web.common.enums.SyncTriggerType;
 import org.apache.seatunnel.web.core.exceptions.ServiceException;
+import org.apache.seatunnel.web.dao.entity.SyncIncrementalConfigEntity;
 import org.apache.seatunnel.web.dao.entity.JobInstance;
+import org.apache.seatunnel.web.spi.bean.dto.BatchLinkUpIncrementalRunRequest;
 import org.apache.seatunnel.web.spi.bean.vo.BatchJobDefinitionVO;
 import org.apache.seatunnel.web.spi.bean.vo.BatchJobOperateResultVO;
 import org.apache.seatunnel.web.spi.bean.vo.JobInstanceVO;
+import org.apache.seatunnel.web.spi.bean.vo.RunResultVO;
 import org.apache.seatunnel.web.spi.enums.Status;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -34,17 +41,40 @@ public class BatchJobExecutorServiceImpl implements BatchJobExecutorService {
     private final BatchJobInstanceService instanceService;
     private final BatchJobDefinitionService definitionService;
     private final BatchJobSubmitter jobSubmitter;
+    private final SyncIncrementalConfigService incrementalConfigService;
+    private final BatchLinkUpIncrementalService batchLinkUpIncrementalService;
 
     public BatchJobExecutorServiceImpl(BatchJobInstanceService instanceService,
                                        BatchJobDefinitionService definitionService,
-                                       BatchJobSubmitter jobSubmitter) {
+                                       BatchJobSubmitter jobSubmitter,
+                                       SyncIncrementalConfigService incrementalConfigService,
+                                       BatchLinkUpIncrementalService batchLinkUpIncrementalService) {
         this.instanceService = instanceService;
         this.definitionService = definitionService;
         this.jobSubmitter = jobSubmitter;
+        this.incrementalConfigService = incrementalConfigService;
+        this.batchLinkUpIncrementalService = batchLinkUpIncrementalService;
     }
 
     @Override
     public Long jobExecute(Long jobDefineId, RunMode runMode) {
+        return jobExecute(jobDefineId, runMode, null);
+    }
+
+    @Override
+    public Long jobExecute(Long jobDefineId, RunMode runMode, String schedulerRunId) {
+        validateJobDefinitionId(jobDefineId);
+        validateRunMode(runMode);
+
+        if (isIncrementalEnabled(jobDefineId)) {
+            return runIncremental(jobDefineId, runMode, schedulerRunId);
+        }
+
+        return jobExecuteOriginal(jobDefineId, runMode);
+    }
+
+    @Override
+    public Long jobExecuteOriginal(Long jobDefineId, RunMode runMode) {
         validateJobDefinitionId(jobDefineId);
         validateRunMode(runMode);
 
@@ -56,6 +86,30 @@ public class BatchJobExecutorServiceImpl implements BatchJobExecutorService {
         jobSubmitter.submit(instance);
 
         return instance.getId();
+    }
+
+    private Long runIncremental(Long jobDefineId, RunMode runMode, String schedulerRunId) {
+        BatchLinkUpIncrementalRunRequest request = new BatchLinkUpIncrementalRunRequest();
+        request.setWaitForFinish(true);
+        request.setRunMode(SyncRunMode.NORMAL.getCode());
+        request.setTriggerType(runMode == RunMode.SCHEDULED
+                ? SyncTriggerType.SCHEDULED.getCode()
+                : SyncTriggerType.MANUAL.getCode());
+        request.setSchedulerRunId(schedulerRunId);
+
+        log.info("Batch-link-up incremental execution selected: jobDefineId={}, runMode={}, schedulerRunId={}",
+                jobDefineId, runMode, schedulerRunId);
+        RunResultVO result = batchLinkUpIncrementalService.runIncremental(jobDefineId, request);
+        log.info("Batch-link-up incremental execution finished: jobDefineId={}, runId={}, batchId={}, status={}",
+                jobDefineId, result.getRunId(), result.getBatchId(), result.getStatus());
+        return null;
+    }
+
+    private boolean isIncrementalEnabled(Long jobDefineId) {
+        SyncIncrementalConfigEntity config = incrementalConfigService.getByBatchLinkUpTaskId(jobDefineId);
+        boolean enabled = config != null && Boolean.TRUE.equals(config.getEnabled());
+        log.info("Batch-link-up incremental enabled check: jobDefineId={}, enabled={}", jobDefineId, enabled);
+        return enabled;
     }
 
     @Override

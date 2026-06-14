@@ -35,6 +35,7 @@ export const getHistoryStatusMeta = (status: string, intl: IntlShape) => {
       };
 
     case "FAILED":
+    case "CHECK_FAILED":
       return {
         text: intl.formatMessage({
           id: "pages.job.status.failed",

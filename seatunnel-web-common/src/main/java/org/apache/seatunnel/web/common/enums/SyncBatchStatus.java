@@ -13,6 +13,7 @@ public enum SyncBatchStatus {
     RUNNING("RUNNING", "运行中"),
     VERIFYING("VERIFYING", "校验中"),
     SUCCESS("SUCCESS", "成功"),
+    CHECK_FAILED("CHECK_FAILED", "校验失败"),
     FAILED("FAILED", "失败"),
     CANCELED("CANCELED", "已取消");
 

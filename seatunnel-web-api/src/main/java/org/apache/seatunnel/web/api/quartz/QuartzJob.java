@@ -39,10 +39,14 @@ public class QuartzJob implements Job {
         logExecutionContext(context);
 
         try {
-            Long instanceId = executorService.jobExecute(jobDefineId, RunMode.SCHEDULED);
+            Long instanceId = executorService.jobExecute(
+                    jobDefineId,
+                    RunMode.SCHEDULED,
+                    context.getFireInstanceId()
+            );
 
-            log.info("Quartz fire: jobDefineId={}, instanceId={}, scheduleId={}, fireTime={}",
-                    jobDefineId, instanceId, scheduleId, context.getFireTime());
+            log.info("Quartz fire: jobDefineId={}, instanceId={}, scheduleId={}, schedulerRunId={}, fireTime={}",
+                    jobDefineId, instanceId, scheduleId, context.getFireInstanceId(), context.getFireTime());
 
             updateLastScheduleTimeSafely(scheduleId);
             updateNextScheduleTimeSafely(context, scheduleId);

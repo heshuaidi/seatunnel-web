@@ -11,6 +11,7 @@ public enum SyncRunStatus {
     SUBMITTED("SUBMITTED", "已提交"),
     RUNNING("RUNNING", "运行中"),
     SUCCESS("SUCCESS", "成功"),
+    CHECK_FAILED("CHECK_FAILED", "校验失败"),
     FAILED("FAILED", "失败"),
     CANCELED("CANCELED", "已取消");
 

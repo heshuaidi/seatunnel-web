@@ -303,35 +303,42 @@ const ActionColumn: React.FC<ActionColumnProps> = ({
     defaultMessage: 'No',
   });
 
-  const menuItems = [
-    {
-      key: 'view',
-      icon: <EyeOutlined />,
-      label: <span style={{ fontWeight: 500 }}>查看详情</span>,
-    },
-    {
-      key: 'edit',
-      icon: <EditOutlined />,
-      label: <span style={{ fontWeight: 500 }}>编辑配置</span>,
-      disabled: !canEdit,
-    },
-    {
-      key: 'runIncremental',
-      icon: <PlayCircleOutlined />,
-      label: <span style={{ fontWeight: 500 }}>手动增量运行</span>,
-      disabled: !isOnline,
-    },
-    {
-      type: 'divider' as const,
-    },
-    {
-      key: 'delete',
-      icon: <DeleteOutlined />,
-      label: <span style={{ fontWeight: 500 }}>删除任务</span>,
-      danger: true,
-      disabled: !canDelete,
-    },
-  ];
+  const menuItems = isOnline
+    ? [
+        {
+          key: 'view',
+          icon: <EyeOutlined />,
+          label: <span style={{ fontWeight: 500 }}>查看详情</span>,
+        },
+        {
+          key: 'runIncremental',
+          icon: <PlayCircleOutlined />,
+          label: <span style={{ fontWeight: 500 }}>手动增量运行</span>,
+        },
+      ]
+    : [
+        {
+          key: 'view',
+          icon: <EyeOutlined />,
+          label: <span style={{ fontWeight: 500 }}>查看详情</span>,
+        },
+        {
+          key: 'edit',
+          icon: <EditOutlined />,
+          label: <span style={{ fontWeight: 500 }}>编辑配置</span>,
+          disabled: !canEdit,
+        },
+        {
+          type: 'divider' as const,
+        },
+        {
+          key: 'delete',
+          icon: <DeleteOutlined />,
+          label: <span style={{ fontWeight: 500 }}>删除任务</span>,
+          danger: true,
+          disabled: !canDelete,
+        },
+      ];
 
   return (
     <>

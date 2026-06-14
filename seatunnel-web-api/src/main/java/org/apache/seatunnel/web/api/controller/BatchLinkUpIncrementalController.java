@@ -12,6 +12,7 @@ import org.apache.seatunnel.web.spi.bean.entity.Result;
 import org.apache.seatunnel.web.spi.bean.vo.BatchLinkUpIncrementalConfigVO;
 import org.apache.seatunnel.web.spi.bean.vo.BatchLinkUpIncrementalContextVO;
 import org.apache.seatunnel.web.spi.bean.vo.BatchLinkUpIncrementalHoconPreviewVO;
+import org.apache.seatunnel.web.spi.bean.vo.RunDetailVO;
 import org.apache.seatunnel.web.spi.bean.vo.RunResultVO;
 import org.apache.seatunnel.web.spi.bean.vo.SyncBatchListItemVO;
 import org.apache.seatunnel.web.spi.bean.vo.SyncRunListItemVO;
@@ -76,9 +77,20 @@ public class BatchLinkUpIncrementalController {
             @PathVariable("taskId") Long taskId,
             @RequestParam(value = "pageNo", required = false) Integer pageNo,
             @RequestParam(value = "pageSize", required = false) Integer pageSize,
-            @RequestParam(value = "status", required = false) String status
+            @RequestParam(value = "status", required = false) String status,
+            @RequestParam(value = "startTime", required = false) String startTime,
+            @RequestParam(value = "endTime", required = false) String endTime,
+            @RequestParam(value = "keyword", required = false) String keyword
     ) {
-        return batchLinkUpIncrementalService.listRuns(taskId, pageNo, pageSize, status);
+        return batchLinkUpIncrementalService.listRuns(taskId, pageNo, pageSize, status, startTime, endTime, keyword);
+    }
+
+    @GetMapping("/incremental-runs/{runId}")
+    public Result<RunDetailVO> getRun(
+            @PathVariable("taskId") Long taskId,
+            @PathVariable("runId") String runId
+    ) {
+        return Result.buildSuc(batchLinkUpIncrementalService.getRun(taskId, runId));
     }
 
     @GetMapping("/incremental-batches")

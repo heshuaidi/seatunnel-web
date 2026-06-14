@@ -9,6 +9,7 @@ import org.apache.seatunnel.web.spi.bean.entity.PaginationResult;
 import org.apache.seatunnel.web.spi.bean.vo.BatchLinkUpIncrementalConfigVO;
 import org.apache.seatunnel.web.spi.bean.vo.BatchLinkUpIncrementalContextVO;
 import org.apache.seatunnel.web.spi.bean.vo.BatchLinkUpIncrementalHoconPreviewVO;
+import org.apache.seatunnel.web.spi.bean.vo.RunDetailVO;
 import org.apache.seatunnel.web.spi.bean.vo.RunResultVO;
 import org.apache.seatunnel.web.spi.bean.vo.SyncBatchListItemVO;
 import org.apache.seatunnel.web.spi.bean.vo.SyncRunListItemVO;
@@ -28,7 +29,17 @@ public interface BatchLinkUpIncrementalService {
 
     RunResultVO runIncremental(Long taskId, BatchLinkUpIncrementalRunRequest request);
 
-    PaginationResult<SyncRunListItemVO> listRuns(Long taskId, Integer pageNo, Integer pageSize, String status);
+    PaginationResult<SyncRunListItemVO> listRuns(
+            Long taskId,
+            Integer pageNo,
+            Integer pageSize,
+            String status,
+            String startTime,
+            String endTime,
+            String keyword
+    );
+
+    RunDetailVO getRun(Long taskId, String runId);
 
     PaginationResult<SyncBatchListItemVO> listBatches(Long taskId, Integer pageNo, Integer pageSize, String status);
 

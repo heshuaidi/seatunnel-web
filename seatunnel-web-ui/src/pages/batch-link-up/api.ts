@@ -122,6 +122,10 @@ export const seatunnelJobExecuteApi = {
     return HttpUtils.get(`${executeApiPrefix}/execute?jobDefineId=${jobDefineId}`);
   },
 
+  executeOriginal: (jobDefineId: any) => {
+    return HttpUtils.get(`${executeApiPrefix}/execute-original?jobDefineId=${jobDefineId}`);
+  },
+
   pause: (jobInstanceId: any) => {
     return HttpUtils.get(`${executeApiPrefix}/pause?jobInstanceId=${jobInstanceId}`);
   },
@@ -240,6 +244,10 @@ export const batchLinkUpIncrementalApi = {
 
   run: (taskId: string | number, data?: any) => {
     return HttpUtils.post(`${batchLinkUpIncrementalPrefix}/${taskId}/run-incremental`, data || {});
+  },
+
+  getRun: (taskId: string | number, runId: string) => {
+    return HttpUtils.get(`${batchLinkUpIncrementalPrefix}/${taskId}/incremental-runs/${runId}`);
   },
 
   listRuns: (taskId: string | number, params?: Record<string, any>) => {

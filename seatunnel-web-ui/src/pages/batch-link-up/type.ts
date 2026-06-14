@@ -1,7 +1,5 @@
 
 import HttpUtils from '@/utils/HttpUtils';
-import { FormInstance, TablePaginationConfig } from 'antd';
-import { Key } from 'antd/es/table/interface';
 
 export enum Operate {
     Add,
@@ -30,11 +28,24 @@ export interface DataSource {
 
 export interface HistoryItem {
     id: string;
+    rawId?: string | number;
+    runType?: "NORMAL" | "INCREMENTAL";
+    runId?: string;
+    batchId?: string;
+    triggerType?: string;
+    schedulerRunId?: string;
     jobName: string;
     jobStatus: any;
     time: string;
     endTime?: string;
     startTime: string;
+    createTime?: string;
+    runtimeConfig?: string;
+    generatedHocon?: string;
+    sourceCount?: number | null;
+    sinkCount?: number | null;
+    errorCount?: number | null;
+    errorMessage?: string;
 }
 
 export interface TableInfo {
@@ -55,7 +66,7 @@ export const taskDefinitionApi = {
     },
 
     batch: (data: any) => {
-        return HttpUtils.post(apiPrefix + "/batch", data);
+        return HttpUtils.post(`${apiPrefix}/batch`, data);
     },
 
 
@@ -79,15 +90,15 @@ export const taskScheduleApiPrefix = "/api/v1/task-schedule"
 
 export const taskScheduleApi = {
     getLast5ExecutionTimes: (cron: string) => {
-        return HttpUtils.get<any[]>(`${taskScheduleApiPrefix}/last5-execution-times?cron=` + cron);
+        return HttpUtils.get<any[]>(`${taskScheduleApiPrefix}/last5-execution-times?cron=${cron}`);
     },
 
     stopSchedule: (taskScheduleId: string) => {
-        return HttpUtils.get<any[]>(`${taskScheduleApiPrefix}/stop-schedule?taskScheduleId=` + taskScheduleId);
+        return HttpUtils.get<any[]>(`${taskScheduleApiPrefix}/stop-schedule?taskScheduleId=${taskScheduleId}`);
     },
 
     startSchedule: (taskScheduleId: string) => {
-        return HttpUtils.get<any[]>(`${taskScheduleApiPrefix}/start-schedule?taskScheduleId=` + taskScheduleId);
+        return HttpUtils.get<any[]>(`${taskScheduleApiPrefix}/start-schedule?taskScheduleId=${taskScheduleId}`);
     },
 };
 

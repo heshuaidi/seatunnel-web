@@ -20,6 +20,7 @@ import {
   DatabaseZap,
   Eye,
   PlayCircle,
+  RefreshCw,
   Save,
   TestTube2,
 } from 'lucide-react';
@@ -85,6 +86,7 @@ interface Props {
   onInsertPlaceholder: (value: string) => void;
   scene?: string | null;
   releaseState?: string | number | null;
+  readOnly?: boolean;
 }
 
 const jsonBlock = (value: any) => (
@@ -140,6 +142,9 @@ const mergeUnique = (...values: any[]) => {
   return result;
 };
 
+const formatNullableCount = (value: any) =>
+  value === undefined || value === null || value === '' ? '未获取' : value;
+
 export default function IncrementalControlDrawer({
   taskId,
   open,
@@ -147,8 +152,10 @@ export default function IncrementalControlDrawer({
   onInsertPlaceholder,
   scene,
   releaseState,
+  readOnly = false,
 }: Props) {
   const [form] = Form.useForm();
+  const enabledValue = Form.useWatch('enabled', form);
   const [activeTab, setActiveTab] = useState('config');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -203,9 +210,11 @@ export default function IncrementalControlDrawer({
   })();
   const canRunIncremental =
     canCallApi &&
+    !readOnly &&
     !isEditScene &&
     isOnline &&
     previewMissingVariables.length === 0;
+  const incrementalEnabled = Boolean(enabledValue);
 
   const initialValues = useMemo(
     () => ({
@@ -404,14 +413,16 @@ export default function IncrementalControlDrawer({
       <Form.Item name={name} noStyle>
         <TextArea rows={4} className={compactInput} />
       </Form.Item>
-      <Button
-        size="small"
-        className="mt-2"
-        icon={<TestTube2 size={14} />}
-        onClick={() => testSql(name, scalar)}
-      >
-        测试 SQL
-      </Button>
+      {!readOnly && (
+        <Button
+          size="small"
+          className="mt-2"
+          icon={<TestTube2 size={14} />}
+          onClick={() => testSql(name, scalar)}
+        >
+          测试 SQL
+        </Button>
+      )}
     </Form.Item>
   );
 
@@ -431,6 +442,13 @@ export default function IncrementalControlDrawer({
         extra={
           <Space>
             <Button
+              icon={<RefreshCw size={14} />}
+              loading={loading}
+              onClick={loadData}
+            >
+              刷新
+            </Button>
+            <Button
               icon={<Eye size={14} />}
               loading={previewing}
               onClick={previewContext}
@@ -444,26 +462,30 @@ export default function IncrementalControlDrawer({
             >
               预览 HOCON
             </Button>
-            <Tooltip title={runDisabledReason}>
-              <span>
+            {!readOnly && (
+              <>
+                <Tooltip title={runDisabledReason}>
+                  <span>
+                    <Button
+                      icon={<PlayCircle size={14} />}
+                      loading={running}
+                      disabled={!canRunIncremental}
+                      onClick={runIncremental}
+                    >
+                      手动增量运行
+                    </Button>
+                  </span>
+                </Tooltip>
                 <Button
-                  icon={<PlayCircle size={14} />}
-                  loading={running}
-                  disabled={!canRunIncremental}
-                  onClick={runIncremental}
+                  type="primary"
+                  icon={<Save size={14} />}
+                  loading={saving}
+                  onClick={saveConfig}
                 >
-                  手动增量运行
+                  保存
                 </Button>
-              </span>
-            </Tooltip>
-            <Button
-              type="primary"
-              icon={<Save size={14} />}
-              loading={saving}
-              onClick={saveConfig}
-            >
-              保存
-            </Button>
+              </>
+            )}
           </Space>
         }
       >
@@ -473,6 +495,14 @@ export default function IncrementalControlDrawer({
             showIcon
             className="mb-4"
             message="当前任务尚未保存，保存 batch-link-up 任务后可配置增量控制。"
+          />
+        )}
+        {readOnly && canCallApi && !incrementalEnabled && (
+          <Alert
+            type="info"
+            showIcon
+            className="mb-4"
+            message="未启用增量控制"
           />
         )}
 
@@ -488,7 +518,7 @@ export default function IncrementalControlDrawer({
                   form={form}
                   layout="vertical"
                   initialValues={initialValues}
-                  disabled={!canCallApi || loading}
+                  disabled={!canCallApi || loading || readOnly}
                 >
                   <div className="grid grid-cols-2 gap-x-4">
                     <Form.Item
@@ -641,6 +671,7 @@ export default function IncrementalControlDrawer({
             {
               key: 'placeholders',
               label: '占位符',
+              disabled: readOnly,
               children: (
                 <Space size={[8, 8]} wrap>
                   {PLACEHOLDERS.map((item) => (
@@ -791,6 +822,21 @@ export default function IncrementalControlDrawer({
                       { title: 'status', dataIndex: 'status' },
                       { title: 'start', dataIndex: 'batchStartValue' },
                       { title: 'end', dataIndex: 'batchEndValue' },
+                      {
+                        title: 'source',
+                        dataIndex: 'sourceCount',
+                        render: formatNullableCount,
+                      },
+                      {
+                        title: 'sink',
+                        dataIndex: 'sinkCount',
+                        render: formatNullableCount,
+                      },
+                      {
+                        title: 'error',
+                        dataIndex: 'errorCount',
+                        render: formatNullableCount,
+                      },
                       { title: 'createTime', dataIndex: 'createTime' },
                     ]}
                   />
@@ -804,9 +850,35 @@ export default function IncrementalControlDrawer({
                       { title: 'runId', dataIndex: 'runId' },
                       { title: 'batchId', dataIndex: 'batchId' },
                       { title: 'status', dataIndex: 'status' },
+                      { title: 'trigger', dataIndex: 'triggerType' },
                       { title: 'jobId', dataIndex: 'seatunnelJobId' },
+                      {
+                        title: 'source',
+                        dataIndex: 'sourceCount',
+                        render: formatNullableCount,
+                      },
+                      {
+                        title: 'sink',
+                        dataIndex: 'sinkCount',
+                        render: formatNullableCount,
+                      },
+                      {
+                        title: 'error',
+                        dataIndex: 'errorCount',
+                        render: formatNullableCount,
+                      },
                       { title: 'endTime', dataIndex: 'endTime' },
                     ]}
+                    expandable={{
+                      expandedRowRender: (record: any) => (
+                        <div className="space-y-3">
+                          {jsonBlock(record)}
+                          <pre className="max-h-[360px] overflow-auto rounded-md border border-slate-200 bg-slate-50 p-3 text-xs">
+                            {record.generatedHocon || '未生成'}
+                          </pre>
+                        </div>
+                      ),
+                    }}
                   />
                 </div>
               ),

@@ -20,6 +20,10 @@ public interface BatchJobExecutorService {
      */
     Long jobExecute(Long jobDefineId, RunMode runMode);
 
+    Long jobExecute(Long jobDefineId, RunMode runMode, String schedulerRunId);
+
+    Long jobExecuteOriginal(Long jobDefineId, RunMode runMode);
+
     /**
      * Pause a running SeaTunnel job instance.
      *
