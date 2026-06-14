@@ -714,6 +714,7 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         JobDefinitionEntity definition = loadDefinition(taskId);
         SyncIncrementalConfigEntity config =
                 syncIncrementalConfigService.getByBatchLinkUpTaskId(definition.getId());
+        SyncIncrementalConfigEntity contextConfig = config == null ? defaultConfig(definition) : config;
         Long datasourceId = resolveTestSqlDatasourceId(request, config);
         if (datasourceId == null) {
             throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR.getCode(), "请选择数据源");
@@ -721,7 +722,7 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
 
         String renderedSql = hoconRenderService.render(
                 request.getSql().trim(),
-                buildTestSqlVariables(definition, request)
+                buildTestSqlVariables(definition, contextConfig, request)
         );
         QueryResult queryResult = executeQuery(
                 resolveTestSqlName(request),
@@ -734,17 +735,22 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
 
     private Map<String, Object> buildTestSqlVariables(
             JobDefinitionEntity definition,
+            SyncIncrementalConfigEntity config,
             BatchLinkUpIncrementalSqlTestRequest request
     ) {
         String code = taskCode(definition);
-        Map<String, Object> variables = new LinkedHashMap<>(nullToEmpty(request.getParams()));
-        variables.put("batch_id", generateBatchId(code));
-        variables.put("run_id", generateRunId(code));
-        variables.put("task_id", definition.getId());
-        variables.put("task_code", code);
-        variables.put("task_name", definition.getJobName());
-        variables.put("biz_date", LocalDate.now().toString());
-        return variables;
+        BaseContext context = createBaseContext(
+                definition,
+                config,
+                Map.of(),
+                nullToEmpty(request.getParams()),
+                generateBatchId(code),
+                generateRunId(code),
+                null,
+                null,
+                null
+        );
+        return context.variables;
     }
 
     private Long resolveTestSqlDatasourceId(
@@ -1076,7 +1082,7 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
                 && datasourceId == null
                 && failFast
                 && !isBlank(sql)) {
-            throw new ServiceException("boundary_datasource_id is required for " + variable + " SQL");
+            throw new ServiceException("请选择边界计算数据源，用于执行 " + variable + " SQL");
         }
         if (config.getBoundaryMode() == SyncBoundaryMode.SIMPLE_WATERMARK
                 && variable.endsWith("_value")
@@ -1099,7 +1105,7 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
             return null;
         }
         if (datasourceId == null) {
-            String message = "boundary datasourceId is required for " + name;
+            String message = "请选择边界计算数据源，用于执行 " + name;
             recordSqlFailure(vo, name, null, sqlTemplate, message);
             if (failFast) {
                 throw new ServiceException(message);
@@ -1176,7 +1182,7 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         }
         if (vo.getDatasourceId() == null) {
             vo.setSuccess(false);
-            vo.setErrorMessage("cleanup_datasource_id is required when cleanup_sql is configured");
+            vo.setErrorMessage("请选择清理 SQL 数据源后再执行 cleanup_sql");
             vo.setRenderedSql(context.config.getCleanupSql());
             return vo;
         }
@@ -1598,7 +1604,7 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
         String renderedSql = null;
         try {
             if (config.getCheckDatasourceId() == null) {
-                throw new ServiceException("check_datasource_id is required when check_sql is enabled");
+                throw new ServiceException("请选择校验 SQL 数据源后再执行 check_sql");
             }
             renderedSql = hoconRenderService.render(config.getCheckSql(), variables);
             syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),

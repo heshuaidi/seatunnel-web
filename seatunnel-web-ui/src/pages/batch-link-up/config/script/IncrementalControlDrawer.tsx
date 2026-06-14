@@ -24,8 +24,10 @@ import {
   Save,
   TestTube2,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import { fetchDataSourceAll } from '@/pages/data-source/service';
+import type { DataSourceRecord } from '@/pages/data-source/types';
 import { batchLinkUpIncrementalApi } from '../../api';
 
 const { TextArea } = Input;
@@ -126,6 +128,10 @@ interface Props {
   scene?: string | null;
   releaseState?: string | number | null;
   readOnly?: boolean;
+  sourceDatasourceId?: string | number;
+  sinkDatasourceId?: string | number;
+  sourceDbType?: string;
+  sinkDbType?: string;
 }
 
 const jsonBlock = (value: any) => (
@@ -162,6 +168,56 @@ const normalizeDatasourceId = (value: any) => {
   }
   const text = String(value).trim();
   return text ? text : undefined;
+};
+
+const datasourceIdText = (value: any) => {
+  const normalized = normalizeDatasourceId(value);
+  return normalized === undefined ? '' : String(normalized);
+};
+
+const normalizeDbType = (value: any) =>
+  String(value || '')
+    .trim()
+    .toUpperCase();
+
+const parseJsonObjectForUi = (value: any, fieldName: string) => {
+  if (value === undefined || value === null || String(value).trim() === '') {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(String(value));
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      message.warning(`${fieldName} 必须是 JSON object`);
+      return undefined;
+    }
+    return parsed;
+  } catch (_error) {
+    message.warning(`${fieldName} JSON 格式错误`);
+    return undefined;
+  }
+};
+
+const isNonBlank = (value: any) =>
+  value !== undefined && value !== null && String(value).trim() !== '';
+
+const datasourceDisplayName = (
+  record: DataSourceRecord | undefined,
+  id: any,
+  includeId = false,
+) => {
+  const normalizedId = datasourceIdText(id);
+  if (!normalizedId) {
+    return '-';
+  }
+  if (!record) {
+    return `已删除的数据源 ID: ${normalizedId}`;
+  }
+  const name = record.name || record.id || normalizedId;
+  return includeId ? `${name}（ID: ${normalizedId}）` : String(name);
 };
 
 const isReleaseOnline = (releaseState?: string | number | null) => {
@@ -220,6 +276,10 @@ export default function IncrementalControlDrawer({
   scene,
   releaseState,
   readOnly = false,
+  sourceDatasourceId,
+  sinkDatasourceId,
+  sourceDbType,
+  sinkDbType,
 }: Props) {
   const [form] = Form.useForm();
   const enabledValue = Form.useWatch('enabled', form);
@@ -237,6 +297,13 @@ export default function IncrementalControlDrawer({
   const [resultOpen, setResultOpen] = useState(false);
   const [resultTitle, setResultTitle] = useState('');
   const [resultValue, setResultValue] = useState<any>(null);
+  const [dataSources, setDataSources] = useState<DataSourceRecord[]>([]);
+  const [dataSourceLoading, setDataSourceLoading] = useState(false);
+  const [dataSourceLoaded, setDataSourceLoaded] = useState(false);
+
+  const boundaryDatasourceValue = Form.useWatch('boundary_datasource_id', form);
+  const checkDatasourceValue = Form.useWatch('check_datasource_id', form);
+  const cleanupDatasourceValue = Form.useWatch('cleanup_datasource_id', form);
 
   const normalizedTaskId =
     taskId === undefined || taskId === null || taskId === ''
@@ -301,6 +368,228 @@ export default function IncrementalControlDrawer({
     [],
   );
 
+  const normalizedSourceDatasourceId = datasourceIdText(sourceDatasourceId);
+  const normalizedSinkDatasourceId = datasourceIdText(sinkDatasourceId);
+  const normalizedSourceDbType = normalizeDbType(sourceDbType);
+  const normalizedSinkDbType = normalizeDbType(sinkDbType);
+
+  const dataSourceMap = useMemo(() => {
+    const map = new Map<string, DataSourceRecord>();
+    dataSources.forEach((item) => {
+      const id = datasourceIdText(item.id);
+      if (id) {
+        map.set(id, item);
+      }
+    });
+    return map;
+  }, [dataSources]);
+
+  const getDataSourceById = useCallback(
+    (id: any) => dataSourceMap.get(datasourceIdText(id)),
+    [dataSourceMap],
+  );
+
+  const loadDataSources = useCallback(async () => {
+    setDataSourceLoading(true);
+    try {
+      const res = (await fetchDataSourceAll()) as any;
+      if (res?.code !== 0) {
+        message.error(res?.message || '加载数据源列表失败');
+        setDataSources([]);
+        return [];
+      }
+      const list = Array.isArray(res?.data)
+        ? res.data
+        : res?.data?.bizData || [];
+      setDataSources(list);
+      setDataSourceLoaded(true);
+      return list;
+    } catch (error) {
+      console.error(error);
+      message.error('加载数据源列表失败');
+      setDataSources([]);
+      return [];
+    } finally {
+      setDataSourceLoading(false);
+    }
+  }, []);
+
+  const applyDatasourceDefaults = useCallback(
+    (values: any) => {
+      const next = { ...(values || {}) };
+      [
+        'boundary_datasource_id',
+        'check_datasource_id',
+        'cleanup_datasource_id',
+      ].forEach((field) => {
+        if (isNonBlank(next[field])) {
+          next[field] = datasourceIdText(next[field]);
+        }
+      });
+      if (!isNonBlank(next.boundary_datasource_id) && normalizedSourceDatasourceId) {
+        next.boundary_datasource_id = normalizedSourceDatasourceId;
+      }
+      if (!isNonBlank(next.check_datasource_id) && normalizedSinkDatasourceId) {
+        next.check_datasource_id = normalizedSinkDatasourceId;
+      }
+      if (!isNonBlank(next.cleanup_datasource_id) && normalizedSinkDatasourceId) {
+        next.cleanup_datasource_id = normalizedSinkDatasourceId;
+      }
+      return next;
+    },
+    [normalizedSourceDatasourceId, normalizedSinkDatasourceId],
+  );
+
+  const buildCurrentContextParams = useCallback(() => {
+    const defaultParams = parseJsonObjectForUi(
+      form.getFieldValue('default_params_json'),
+      'default_params_json',
+    );
+    if (defaultParams === undefined) {
+      return undefined;
+    }
+    const customContext = parseJsonObjectForUi(
+      form.getFieldValue('custom_context_json'),
+      'custom_context_json',
+    );
+    if (customContext === undefined) {
+      return undefined;
+    }
+    return {
+      ...defaultParams,
+      ...customContext,
+    };
+  }, [form]);
+
+  const buildDataSourceOptions = useCallback(
+    (preferredDbType?: string, selectedValue?: any) => {
+      const selectedId = datasourceIdText(selectedValue);
+      const preferred = normalizeDbType(preferredDbType);
+      const toOption = (item: DataSourceRecord, recommended = false) => {
+        const id = datasourceIdText(item.id);
+        const dbType = normalizeDbType(item.dbType);
+        const secondary = item.jdbcUrl || item.remark || item.environmentName;
+        const selectedLabel = readOnly
+          ? datasourceDisplayName(item, id, true)
+          : datasourceDisplayName(item, id);
+        return {
+          value: id,
+          displayLabel: selectedLabel,
+          searchText: [
+            item.name,
+            item.dbType,
+            item.jdbcUrl,
+            item.remark,
+            item.environmentName,
+            id,
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase(),
+          label: (
+            <div className="min-w-0 py-1">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate font-medium text-slate-800">
+                  {item.name || id}
+                </span>
+                {dbType ? <Tag className="m-0">{dbType}</Tag> : null}
+                {recommended ? (
+                  <Tag color="blue" className="m-0">
+                    推荐
+                  </Tag>
+                ) : null}
+              </div>
+              {secondary ? (
+                <div className="mt-1 truncate text-xs text-slate-500">
+                  {secondary}
+                </div>
+              ) : null}
+            </div>
+          ),
+        };
+      };
+
+      const recommended = preferred
+        ? dataSources.filter((item) => normalizeDbType(item.dbType) === preferred)
+        : [];
+      const others = dataSources.filter(
+        (item) => !preferred || normalizeDbType(item.dbType) !== preferred,
+      );
+      const groups: any[] = [];
+
+      if (selectedId && dataSourceLoaded && !dataSourceMap.has(selectedId)) {
+        groups.push({
+          label: '历史配置',
+          options: [
+            {
+              value: selectedId,
+              displayLabel: `已删除的数据源 ID: ${selectedId}`,
+              searchText: selectedId,
+              disabled: true,
+              label: (
+                <div className="py-1 text-orange-600">
+                  已删除的数据源 ID: {selectedId}
+                </div>
+              ),
+            },
+          ],
+        });
+      }
+
+      if (recommended.length > 0) {
+        groups.push({
+          label: preferred ? `推荐 ${preferred} 数据源` : '推荐数据源',
+          options: recommended.map((item) => toOption(item, true)),
+        });
+      }
+
+      if (others.length > 0) {
+        groups.push({
+          label: preferred ? '其他数据源' : '全部数据源',
+          options: others.map((item) => toOption(item)),
+        });
+      }
+
+      return groups;
+    },
+    [dataSourceLoaded, dataSourceMap, dataSources, readOnly],
+  );
+
+  const getSqlDatasourceField = useCallback((fieldName: string) => {
+    if (fieldName === 'check_sql') {
+      return 'check_datasource_id';
+    }
+    if (fieldName === 'cleanup_sql') {
+      return 'cleanup_datasource_id';
+    }
+    return 'boundary_datasource_id';
+  }, []);
+
+  const selectedDatasourceDeletedMessages = useMemo(() => {
+    if (!dataSourceLoaded) {
+      return [];
+    }
+    return [
+      ['边界计算数据源', boundaryDatasourceValue],
+      ['校验 SQL 数据源', checkDatasourceValue],
+      ['清理 SQL 数据源', cleanupDatasourceValue],
+    ]
+      .map(([label, value]) => {
+        const id = datasourceIdText(value);
+        if (!id || dataSourceMap.has(id)) {
+          return null;
+        }
+        return `${label} 已删除：${id}，请重新选择后保存。`;
+      })
+      .filter(Boolean) as string[];
+  }, [
+    boundaryDatasourceValue,
+    checkDatasourceValue,
+    cleanupDatasourceValue,
+    dataSourceLoaded,
+    dataSourceMap,
+  ]);
+
   const loadData = async () => {
     if (normalizedTaskId === undefined) return;
     const currentTaskId = normalizedTaskId;
@@ -324,7 +613,7 @@ export default function IncrementalControlDrawer({
       if (configRes?.code === 0) {
         form.setFieldsValue({
           ...initialValues,
-          ...toFormValues(configRes.data),
+          ...applyDatasourceDefaults(toFormValues(configRes.data)),
         });
       }
       if (watermarkRes?.code === 0) {
@@ -347,6 +636,8 @@ export default function IncrementalControlDrawer({
     if (open) {
       form.setFieldsValue(initialValues);
       setActiveTab('config');
+      setDataSourceLoaded(false);
+      loadDataSources();
       loadData();
     }
   }, [open, taskId]);
@@ -366,7 +657,7 @@ export default function IncrementalControlDrawer({
         return;
       }
       message.success('增量配置已保存');
-      form.setFieldsValue(toFormValues(res.data));
+      form.setFieldsValue(applyDatasourceDefaults(toFormValues(res.data)));
       await loadData();
     } catch (error) {
       console.error(error);
@@ -378,11 +669,13 @@ export default function IncrementalControlDrawer({
   const previewContext = async () => {
     if (normalizedTaskId === undefined) return;
     const currentTaskId = normalizedTaskId;
+    const params = buildCurrentContextParams();
+    if (params === undefined) return;
     setPreviewing(true);
     try {
       const res = (await batchLinkUpIncrementalApi.previewContext(
         currentTaskId,
-        {},
+        { params },
       )) as any;
       if (res?.code !== 0) {
         message.error(res?.message || '预览增量上下文失败');
@@ -399,11 +692,13 @@ export default function IncrementalControlDrawer({
   const previewHocon = async () => {
     if (normalizedTaskId === undefined) return;
     const currentTaskId = normalizedTaskId;
+    const params = buildCurrentContextParams();
+    if (params === undefined) return;
     setPreviewing(true);
     try {
       const res = (await batchLinkUpIncrementalApi.previewHocon(
         currentTaskId,
-        {},
+        { params },
       )) as any;
       if (res?.code !== 0) {
         message.error(res?.message || '预览 rendered HOCON 失败');
@@ -427,10 +722,13 @@ export default function IncrementalControlDrawer({
       return;
     }
     const currentTaskId = normalizedTaskId;
+    const params = buildCurrentContextParams();
+    if (params === undefined) return;
     setRunning(true);
     try {
       const res = (await batchLinkUpIncrementalApi.run(currentTaskId, {
         waitForFinish: true,
+        params,
       })) as any;
       if (res?.code !== 0) {
         message.error(res?.message || '增量运行失败');
@@ -464,6 +762,22 @@ export default function IncrementalControlDrawer({
     }
   };
 
+  const decorateSqlResult = useCallback(
+    (value: any, fallbackDatasourceId?: any) => {
+      const datasourceId = datasourceIdText(value?.datasourceId || fallbackDatasourceId);
+      return {
+        ...(value || {}),
+        datasourceId,
+        datasourceName: datasourceDisplayName(
+          getDataSourceById(datasourceId),
+          datasourceId,
+          true,
+        ),
+      };
+    },
+    [getDataSourceById],
+  );
+
   const testSql = async (fieldName: string, scalar = false) => {
     if (normalizedTaskId === undefined) return;
     const currentTaskId = normalizedTaskId;
@@ -472,11 +786,14 @@ export default function IncrementalControlDrawer({
       message.warning('请先填写 SQL');
       return;
     }
-    const datasourceId =
-      fieldName === 'check_sql'
-        ? form.getFieldValue('check_datasource_id') ||
-          form.getFieldValue('boundary_datasource_id')
-        : form.getFieldValue('boundary_datasource_id');
+    const datasourceField = getSqlDatasourceField(fieldName);
+    const datasourceId = normalizeDatasourceId(form.getFieldValue(datasourceField));
+    if (!datasourceId) {
+      message.warning('请选择用于执行该 SQL 的数据源。');
+      return;
+    }
+    const params = buildCurrentContextParams();
+    if (params === undefined) return;
     try {
       const res = (await batchLinkUpIncrementalApi.testSql(currentTaskId, {
         sql,
@@ -484,16 +801,41 @@ export default function IncrementalControlDrawer({
         datasourceId: normalizeDatasourceId(datasourceId),
         fieldName,
         sqlType: fieldName,
+        params,
       })) as any;
       if (res?.code !== 0) {
-        message.error(res?.message || 'SQL 测试失败');
+        const failed = decorateSqlResult(
+          {
+            name: fieldName,
+            success: false,
+            renderedSql: sql,
+            errorMessage: res?.message || 'SQL 测试失败',
+          },
+          datasourceId,
+        );
+        setResultTitle(`SQL 测试结果：${fieldName}`);
+        setResultValue(failed);
+        setResultOpen(true);
+        message.error(failed.errorMessage);
         return;
       }
       setResultTitle(`SQL 测试结果：${fieldName}`);
-      setResultValue(res.data);
+      setResultValue(decorateSqlResult(res.data, datasourceId));
       setResultOpen(true);
-    } catch (_error) {
-      message.error('SQL 测试失败');
+    } catch (error: any) {
+      const failed = decorateSqlResult(
+        {
+          name: fieldName,
+          success: false,
+          renderedSql: sql,
+          errorMessage: error?.message || 'SQL 测试失败',
+        },
+        datasourceId,
+      );
+      setResultTitle(`SQL 测试结果：${fieldName}`);
+      setResultValue(failed);
+      setResultOpen(true);
+      message.error(failed.errorMessage);
     }
   };
 
@@ -516,7 +858,7 @@ export default function IncrementalControlDrawer({
     Modal.confirm({
       title: '确认执行 cleanup_sql？',
       content:
-        '该操作会直接连接 cleanup_datasource_id 执行清理 SQL。请确认 SQL 只清理本次失败批次数据。',
+        '该操作会直接连接清理 SQL 数据源执行清理 SQL。请确认 SQL 只清理本次失败批次数据。',
       okText: '执行 cleanup_sql',
       cancelText: '取消',
       onOk: async () => {
@@ -534,7 +876,7 @@ export default function IncrementalControlDrawer({
           }
           message.success('cleanup_sql 执行成功');
           setResultTitle('cleanup_sql 执行结果');
-          setResultValue(res.data);
+          setResultValue(decorateSqlResult(res.data));
           setResultOpen(true);
           await loadData();
         } finally {
@@ -580,6 +922,117 @@ export default function IncrementalControlDrawer({
     });
   };
 
+  const requiresBoundaryDatasource = () =>
+    [
+      'batch_prepare_sql',
+      'batch_start_value_sql',
+      'batch_end_value_sql',
+      'batch_start_time_sql',
+      'batch_end_time_sql',
+    ].some((field) => isNonBlank(form.getFieldValue(field))) ||
+    [
+      'start_value_source',
+      'end_value_source',
+      'start_time_source',
+      'end_time_source',
+    ].some((field) => form.getFieldValue(field) === 'SQL');
+
+  const requiresCheckDatasource = () =>
+    Boolean(form.getFieldValue('check_enabled')) ||
+    isNonBlank(form.getFieldValue('check_sql'));
+
+  const requiresCleanupDatasource = () =>
+    isNonBlank(form.getFieldValue('cleanup_sql'));
+
+  const validateDatasourceSelection = (
+    label: string,
+    requiredWhen?: () => boolean,
+  ) => async (_: any, value: any) => {
+    const id = datasourceIdText(value);
+    if (!id) {
+      if (requiredWhen?.()) {
+        return Promise.reject(new Error('请选择用于执行该 SQL 的数据源。'));
+      }
+      return Promise.resolve();
+    }
+    if (dataSourceLoaded && !dataSourceMap.has(id)) {
+      return Promise.reject(
+        new Error(`${label} 已删除：${id}，请重新选择。`),
+      );
+    }
+    return Promise.resolve();
+  };
+
+  const renderDataSourceSelect = ({
+    name,
+    label,
+    help,
+    recommend,
+    preferredDbType,
+    requiredWhen,
+  }: {
+    name: string;
+    label: string;
+    help: string;
+    recommend: string;
+    preferredDbType?: string;
+    requiredWhen?: () => boolean;
+  }) => {
+    const currentValue =
+      name === 'boundary_datasource_id'
+        ? boundaryDatasourceValue
+        : name === 'check_datasource_id'
+          ? checkDatasourceValue
+          : cleanupDatasourceValue;
+
+    return (
+      <Form.Item
+        name={name}
+        label={label}
+        dependencies={[
+          'batch_prepare_sql',
+          'batch_start_value_sql',
+          'batch_end_value_sql',
+          'batch_start_time_sql',
+          'batch_end_time_sql',
+          'start_value_source',
+          'end_value_source',
+          'start_time_source',
+          'end_time_source',
+          'check_enabled',
+          'check_sql',
+          'cleanup_sql',
+        ]}
+        extra={
+          <div className="space-y-1 text-xs leading-5 text-slate-500">
+            <div>{help}</div>
+            <div className="text-blue-600">{recommend}</div>
+          </div>
+        }
+        rules={[
+          {
+            validator: validateDatasourceSelection(label, requiredWhen),
+          },
+        ]}
+      >
+        <Select
+          showSearch
+          allowClear={!readOnly}
+          className="w-full"
+          placeholder={`请选择${label}`}
+          loading={dataSourceLoading}
+          disabled={!canCallApi || loading || readOnly}
+          options={buildDataSourceOptions(preferredDbType, currentValue)}
+          optionLabelProp="displayLabel"
+          filterOption={(input, option) => {
+            const searchText = String((option as any)?.searchText || '');
+            return searchText.includes(input.trim().toLowerCase());
+          }}
+        />
+      </Form.Item>
+    );
+  };
+
   const renderSqlItem = (name: string, label: string, scalar = false) => (
     <Form.Item label={label}>
       <Form.Item name={name} noStyle>
@@ -597,6 +1050,57 @@ export default function IncrementalControlDrawer({
       )}
     </Form.Item>
   );
+
+  const renderSqlResultSummary = () => {
+    if (
+      !resultValue ||
+      (resultValue.datasourceId === undefined &&
+        resultValue.renderedSql === undefined &&
+        resultValue.name === undefined)
+    ) {
+      return null;
+    }
+    const success = resultValue.success !== false && !resultValue.errorMessage;
+    const firstRow = Array.isArray(resultValue.rows)
+      ? resultValue.rows[0]
+      : undefined;
+    const firstResult =
+      firstRow !== undefined
+        ? firstRow
+        : resultValue.scalarValue !== undefined
+          ? resultValue.scalarValue
+          : undefined;
+    return (
+      <Descriptions bordered size="small" column={1} className="mb-3">
+        <Descriptions.Item label="执行状态">
+          <Tag color={success ? 'green' : 'red'}>
+            {success ? '执行成功' : '执行失败'}
+          </Tag>
+        </Descriptions.Item>
+        <Descriptions.Item label="使用的数据源">
+          {resultValue.datasourceName ||
+            datasourceDisplayName(
+              getDataSourceById(resultValue.datasourceId),
+              resultValue.datasourceId,
+              true,
+            )}
+        </Descriptions.Item>
+        <Descriptions.Item label={success ? '第一行结果' : '错误信息'}>
+          {success ? (
+            firstResult === undefined ? (
+              '无返回行'
+            ) : (
+              <pre className="m-0 max-h-[160px] overflow-auto whitespace-pre-wrap break-all text-xs">
+                {JSON.stringify(firstResult, null, 2)}
+              </pre>
+            )
+          ) : (
+            resultValue.errorMessage || 'SQL 执行失败'
+          )}
+        </Descriptions.Item>
+      </Descriptions>
+    );
+  };
 
   return (
     <>
@@ -677,6 +1181,15 @@ export default function IncrementalControlDrawer({
             message="未启用增量控制"
           />
         )}
+        {selectedDatasourceDeletedMessages.length > 0 && (
+          <Alert
+            type="warning"
+            showIcon
+            className="mb-4"
+            message="历史配置引用的数据源已被删除"
+            description={selectedDatasourceDeletedMessages.join('；')}
+          />
+        )}
 
         <Tabs
           activeKey={activeTab}
@@ -731,18 +1244,24 @@ export default function IncrementalControlDrawer({
                         ]}
                       />
                     </Form.Item>
-                    <Form.Item
-                      name="boundary_datasource_id"
-                      label="boundary_datasource_id"
-                    >
-                      <Input className={compactInput} />
-                    </Form.Item>
-                    <Form.Item
-                      name="check_datasource_id"
-                      label="check_datasource_id"
-                    >
-                      <Input className={compactInput} />
-                    </Form.Item>
+                    {renderDataSourceSelect({
+                      name: 'boundary_datasource_id',
+                      label: '边界计算数据源',
+                      help:
+                        '用于执行 batch_start/batch_end 边界 SQL，通常选择源端数据源。',
+                      recommend: '推荐选择源端数据源',
+                      preferredDbType: normalizedSourceDbType,
+                      requiredWhen: requiresBoundaryDatasource,
+                    })}
+                    {renderDataSourceSelect({
+                      name: 'check_datasource_id',
+                      label: '校验 SQL 数据源',
+                      help:
+                        '用于执行 check_sql，通常选择目标端数据源，也可以选择审计库或其他可查询校验结果的数据源。',
+                      recommend: '推荐选择目标端数据源',
+                      preferredDbType: normalizedSinkDbType,
+                      requiredWhen: requiresCheckDatasource,
+                    })}
                     <Form.Item
                       name="start_value_source"
                       label="batch_start_value 来源"
@@ -882,12 +1401,15 @@ export default function IncrementalControlDrawer({
                     description="如果 SeaTunnel 已写入目标端但 check_sql 失败，watermark 不会推进。重跑前请清理本批次数据，或确保目标表是 Primary Key / Unique Key / Upsert 幂等表。cleanup_sql 只会在历史详情中手动执行或清理并重跑时执行。"
                   />
                   <div className="grid grid-cols-2 gap-x-4">
-                    <Form.Item
-                      name="cleanup_datasource_id"
-                      label="cleanup_datasource_id"
-                    >
-                      <Input className={compactInput} />
-                    </Form.Item>
+                    {renderDataSourceSelect({
+                      name: 'cleanup_datasource_id',
+                      label: '清理 SQL 数据源',
+                      help:
+                        '用于执行 cleanup_sql，通常选择目标端数据源。cleanup_sql 会修改数据，执行前需要二次确认。',
+                      recommend: '推荐选择目标端数据源',
+                      preferredDbType: normalizedSinkDbType,
+                      requiredWhen: requiresCleanupDatasource,
+                    })}
                     <Form.Item
                       name="cleanup_on_rerun"
                       label="失败重跑时允许 cleanup_sql"
@@ -1252,6 +1774,7 @@ export default function IncrementalControlDrawer({
             message={resultValue.errorMessage}
           />
         ) : null}
+        {renderSqlResultSummary()}
         {jsonBlock(resultValue)}
       </Modal>
     </>

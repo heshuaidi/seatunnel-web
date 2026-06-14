@@ -104,6 +104,10 @@ const TaskViewModal = forwardRef((_props: CreateModalProps, ref) => {
         onInsertPlaceholder={() => {}}
         scene="detail"
         releaseState={jobItem?.releaseState}
+        sourceDatasourceId={jobItem?.sourceDatasourceId}
+        sinkDatasourceId={jobItem?.sinkDatasourceId}
+        sourceDbType={jobItem?.sourceType}
+        sinkDbType={jobItem?.sinkType}
         readOnly
       />
     </Modal>

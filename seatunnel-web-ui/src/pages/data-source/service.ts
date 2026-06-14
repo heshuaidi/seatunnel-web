@@ -22,8 +22,8 @@ export async function fetchDataSourceDetail(
 
 export async function fetchDataSourceAll(
 
-): Promise<CommonApiResponse<DataSourcePageResult>> {
-    return HttpUtils.post(`${DATA_SOURCE_API_PREFIX}/all`);
+): Promise<CommonApiResponse<DataSourceRecord[]>> {
+    return HttpUtils.get(`${DATA_SOURCE_API_PREFIX}/all`);
 }
 
 export async function createDataSource(

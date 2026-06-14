@@ -278,6 +278,10 @@ export default function CustomWorkflow({
         onInsertPlaceholder={setInsertText}
         scene={scene}
         releaseState={params?.releaseState}
+        sourceDatasourceId={basicConfig?.sourceDataSourceId}
+        sinkDatasourceId={basicConfig?.targetDataSourceId}
+        sourceDbType={basicConfig?.sourceType}
+        sinkDbType={basicConfig?.targetType}
       />
     </div>
   );
