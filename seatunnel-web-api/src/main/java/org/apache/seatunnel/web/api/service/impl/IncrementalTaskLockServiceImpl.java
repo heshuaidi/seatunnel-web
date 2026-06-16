@@ -26,13 +26,26 @@ public class IncrementalTaskLockServiceImpl implements IncrementalTaskLockServic
 
     @Override
     public IncrementalLockResult acquireLock(Long taskId, String watermarkKey, String runId, String batchId) {
+        return acquireLock(taskId, watermarkKey, runId, batchId, null);
+    }
+
+    @Override
+    public IncrementalLockResult acquireLock(
+            Long taskId,
+            String watermarkKey,
+            String runId,
+            String batchId,
+            Long ttlMinutesOverride
+    ) {
         if (taskId == null) {
             return IncrementalLockResult.rejected(null);
         }
         String safeWatermarkKey = isBlank(watermarkKey) ? "default" : watermarkKey.trim();
         String token = UUID.randomUUID().toString().replace("-", "");
         Date now = new Date();
-        long ttlMinutes = configuredLockTtlMinutes > 0
+        long ttlMinutes = ttlMinutesOverride != null && ttlMinutesOverride > 0
+                ? ttlMinutesOverride
+                : configuredLockTtlMinutes > 0
                 ? configuredLockTtlMinutes
                 : syncRunProperties.getIncrementalLockTtlMinutes();
         Date expiresAt = Date.from(Instant.ofEpochMilli(now.getTime())

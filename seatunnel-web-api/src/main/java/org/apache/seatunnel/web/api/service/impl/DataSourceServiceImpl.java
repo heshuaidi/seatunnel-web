@@ -6,6 +6,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.seatunnel.plugin.datasource.api.jdbc.DataSourceProcessor;
 import org.apache.seatunnel.plugin.datasource.api.utils.DataSourceUtils;
+import org.apache.seatunnel.web.api.service.file.FileSourceClient;
+import org.apache.seatunnel.web.api.service.model.FileDataSourceConfig;
 import org.apache.seatunnel.web.core.exceptions.ServiceException;
 import org.apache.seatunnel.web.api.service.DataSourceService;
 import org.apache.seatunnel.web.common.enums.ConnStatus;
@@ -49,18 +51,18 @@ public class DataSourceServiceImpl extends BaseServiceImpl implements DataSource
     @Resource
     private DataSourceDao dataSourceDao;
 
+    @Resource
+    private FileSourceClient fileSourceClient;
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public DataSource createDataSource(DataSourceDTO dto) {
         validateCreateRequest(dto);
 
         try {
-            ConnectionParam connectionParam =
-                    DataSourceUtils.buildConnectionParams(dto.getDbType(), dto.getConnectionParams());
-
             DataSource entity = ConvertUtil.sourceToTarget(dto, DataSource.class);
             entity.setName(dto.getName().trim());
-            entity.setConnectionParams(JSONUtils.toJsonString(connectionParam));
+            entity.setConnectionParams(buildConnectionParamsJson(dto.getDbType(), dto.getConnectionParams(), false));
             entity.setOriginalJson(dto.getConnectionParams());
             entity.setConnStatus(ConnStatus.CONNECTED_NONE);
             entity.initInsert();
@@ -87,14 +89,10 @@ public class DataSourceServiceImpl extends BaseServiceImpl implements DataSource
         validateUpdateRequest(id, dto);
 
         try {
-            BaseConnectionParam connectionParam =
-                    DataSourceUtils.buildConnectionParams(dto.getDbType(), dto.getConnectionParams());
-            DataSourceUtils.checkDatasourceParam(connectionParam);
-
             DataSource entity = ConvertUtil.sourceToTarget(dto, DataSource.class);
             entity.setId(id);
             entity.setName(dto.getName().trim());
-            entity.setConnectionParams(JSONUtils.toJsonString(connectionParam));
+            entity.setConnectionParams(buildConnectionParamsJson(dto.getDbType(), dto.getConnectionParams(), true));
             entity.setOriginalJson(dto.getConnectionParams());
             entity.setConnStatus(existing.getConnStatus());
             entity.initUpdate();
@@ -176,6 +174,11 @@ public class DataSourceServiceImpl extends BaseServiceImpl implements DataSource
 
         try {
             DbType dbType = extractDbType(connJson);
+            if (fileSourceClient.supports(dbType)) {
+                FileDataSourceConfig config = fileSourceClient.parseConfig(dbType, connJson);
+                fileSourceClient.test(dbType, config);
+                return true;
+            }
             ConnectionParam param = DataSourceUtils.buildConnectionParams(dbType, connJson);
             return checkConnection(dbType, param);
         } catch (ServiceException e) {
@@ -378,6 +381,9 @@ public class DataSourceServiceImpl extends BaseServiceImpl implements DataSource
     private DbType extractDbType(String connJson) {
         String type = JSONUtils.getNodeString(connJson, "type");
         if (StringUtils.isBlank(type)) {
+            type = JSONUtils.getNodeString(connJson, "dbType");
+        }
+        if (StringUtils.isBlank(type)) {
             throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "type");
         }
 
@@ -391,6 +397,16 @@ public class DataSourceServiceImpl extends BaseServiceImpl implements DataSource
     private Boolean testConnection(DataSource dataSource) {
         updateConnectionStatus(dataSource.getId(), ConnStatus.CONNECTING);
         try {
+            if (fileSourceClient.supports(dataSource.getDbType())) {
+                FileDataSourceConfig config = fileSourceClient.parseConfig(
+                        dataSource.getDbType(),
+                        dataSource.getConnectionParams()
+                );
+                fileSourceClient.test(dataSource.getDbType(), config);
+                updateConnectionStatus(dataSource.getId(), ConnStatus.CONNECTED_SUCCESS);
+                return true;
+            }
+
             ConnectionParam param = DataSourceUtils.buildConnectionParams(
                     dataSource.getDbType(),
                     dataSource.getConnectionParams()
@@ -427,6 +443,9 @@ public class DataSourceServiceImpl extends BaseServiceImpl implements DataSource
 
         try {
             String jdbcUrl = JSONUtils.getNodeString(vo.getConnectionParams(), "url");
+            if (StringUtils.isBlank(jdbcUrl)) {
+                jdbcUrl = buildFileDatasourceDisplay(vo.getDbType(), vo.getConnectionParams());
+            }
             vo.setJdbcUrl(jdbcUrl);
         } catch (Exception e) {
             log.warn("Parse jdbc url from connection params failed");
@@ -443,5 +462,39 @@ public class DataSourceServiceImpl extends BaseServiceImpl implements DataSource
         option.setLabel(entity.getName());
         option.setDbType(entity.getDbType());
         return option;
+    }
+
+    private String buildConnectionParamsJson(DbType dbType, String connectionParamsJson, boolean checkParam) {
+        if (fileSourceClient.supports(dbType)) {
+            FileDataSourceConfig config = fileSourceClient.parseConfig(dbType, connectionParamsJson);
+            if (StringUtils.isBlank(config.getType())) {
+                config.setType(dbType.name());
+            }
+            if (StringUtils.isBlank(config.getDbType())) {
+                config.setDbType(dbType.name());
+            }
+            if (config.getEnabled() == null) {
+                config.setEnabled(true);
+            }
+            return JSONUtils.toJsonString(config);
+        }
+        BaseConnectionParam connectionParam =
+                DataSourceUtils.buildConnectionParams(dbType, connectionParamsJson);
+        if (checkParam) {
+            DataSourceUtils.checkDatasourceParam(connectionParam);
+        }
+        return JSONUtils.toJsonString(connectionParam);
+    }
+
+    private String buildFileDatasourceDisplay(DbType dbType, String connectionParams) {
+        if (!fileSourceClient.supports(dbType)) {
+            return "";
+        }
+        FileDataSourceConfig config = fileSourceClient.parseConfig(dbType, connectionParams);
+        if (dbType == DbType.LOCAL_FILE || dbType == DbType.NAS) {
+            return config.getRootPath();
+        }
+        String port = config.getPort() == null ? "" : ":" + config.getPort();
+        return dbType.name().toLowerCase() + "://" + config.getHost() + port + config.getRootPath();
     }
 }

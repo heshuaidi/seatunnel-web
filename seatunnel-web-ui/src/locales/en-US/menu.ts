@@ -54,6 +54,7 @@ export default {
   'menu.data-sync': 'Data Sync',
   'menu.data-sync.batch': 'Batch Sync',
   'menu.data-sync.stream': 'Stream Sync',
+  'menu.measurement-file-sync': 'Measurement Files',
   'menu.sync-control': 'Incremental Sync',
   'menu.sync-control.test-console': 'Incremental Sync Console',
   'menu.metrics': 'Metrics',

@@ -16,6 +16,10 @@ public enum DbType {
     ORACLE("ORACLE", "ORACLE", "ORACLE"),
     POSTGRE_SQL("POSTGRE_SQL", "POSTGRE_SQL", "POSTGRE_SQL"),
     STARROCKS("STARROCKS", "STARROCKS", "STARROCKS"),
+    LOCAL_FILE("LOCAL_FILE", "LOCAL_FILE", "LOCAL_FILE"),
+    NAS("NAS", "NAS", "NAS"),
+    FTP("FTP", "FTP", "FTP"),
+    SFTP("SFTP", "SFTP", "SFTP"),
     H2("H2", "H2", "H2")
     ;
 

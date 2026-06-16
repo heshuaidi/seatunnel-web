@@ -318,3 +318,100 @@ CREATE TABLE IF NOT EXISTS `t_seatunnel_web_sync_file_item`
     KEY                  `idx_sync_file_batch` (`batch_id`),
     KEY                  `idx_sync_file` (`task_id`, `file_path`(255), `file_size`, `last_modified_time`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='通用增量同步文件清单表';
+
+-- =========================================
+-- 量测文件同步任务表
+-- =========================================
+CREATE TABLE IF NOT EXISTS `t_seatunnel_web_measurement_file_task`
+(
+    `id`                     bigint       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `task_name`              varchar(200) NOT NULL COMMENT '任务名称',
+    `task_code`              varchar(100) NOT NULL COMMENT '任务编码',
+    `parser_type`            varchar(30)  NOT NULL COMMENT '解析器类型：WAT / CP / CUSTOM',
+    `source_datasource_id`   bigint       NOT NULL COMMENT '文件源数据源ID',
+    `source_root_path`       varchar(1000)         DEFAULT NULL COMMENT '任务级源根路径，空则使用数据源 rootPath',
+    `include_patterns`       varchar(1000)         DEFAULT NULL COMMENT '包含文件 glob，逗号或换行分隔',
+    `exclude_patterns`       varchar(1000)         DEFAULT NULL COMMENT '排除文件 glob，逗号或换行分隔',
+    `recursive`              tinyint(1)   NOT NULL DEFAULT 0 COMMENT '是否递归扫描',
+    `max_depth`              int                   DEFAULT NULL COMMENT '递归最大深度',
+    `min_last_modified_time` datetime              DEFAULT NULL COMMENT '最小文件最后修改时间',
+    `file_stable_seconds`    int          NOT NULL DEFAULT 0 COMMENT '文件稳定秒数',
+    `enabled`                tinyint(1)   NOT NULL DEFAULT 1 COMMENT '是否启用',
+    `discovery_mode`         varchar(30)  NOT NULL DEFAULT 'FULL_SCAN' COMMENT '发现模式',
+    `watermark_key`          varchar(100) NOT NULL DEFAULT 'default' COMMENT 'watermark key',
+    `current_watermark`      varchar(500)          DEFAULT NULL COMMENT '当前 watermark',
+    `dedup_strategy`         varchar(30)  NOT NULL DEFAULT 'PATH_SIZE_MTIME' COMMENT '去重策略',
+    `checksum_enabled`       tinyint(1)   NOT NULL DEFAULT 0 COMMENT '是否启用 checksum',
+    `max_files_per_run`      int          NOT NULL DEFAULT 1000 COMMENT '单次最大处理文件数',
+    `lock_ttl_minutes`       int          NOT NULL DEFAULT 60 COMMENT '锁 TTL 分钟',
+    `schedule_cron`          varchar(100)          DEFAULT NULL COMMENT '调度 cron',
+    `description`            varchar(1000)         DEFAULT NULL COMMENT '描述',
+    `create_time`            datetime     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `update_time`            datetime     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_measurement_file_task_code` (`task_code`),
+    KEY                      `idx_measurement_file_task_ds` (`source_datasource_id`),
+    KEY                      `idx_measurement_file_task_enabled` (`enabled`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='量测文件同步任务表';
+
+-- =========================================
+-- 量测文件同步 Run History 表
+-- =========================================
+CREATE TABLE IF NOT EXISTS `t_seatunnel_web_measurement_file_run`
+(
+    `id`                   bigint       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `run_id`               varchar(100) NOT NULL COMMENT '运行ID',
+    `batch_id`             varchar(100)          DEFAULT NULL COMMENT '批次ID',
+    `task_id`              bigint       NOT NULL COMMENT '任务ID',
+    `trigger_type`         varchar(30)  NOT NULL COMMENT '触发类型：MANUAL / SCHEDULED',
+    `status`               varchar(30)  NOT NULL COMMENT '运行状态：SUCCESS / FAILED / SKIPPED / RUNNING',
+    `source_datasource_id` bigint       NOT NULL COMMENT '源数据源ID',
+    `scanned_count`        int          NOT NULL DEFAULT 0 COMMENT '扫描文件数',
+    `discovered_count`     int          NOT NULL DEFAULT 0 COMMENT '新发现文件数',
+    `skipped_count`        int          NOT NULL DEFAULT 0 COMMENT '跳过文件数',
+    `failed_count`         int          NOT NULL DEFAULT 0 COMMENT '失败文件数',
+    `error_message`        mediumtext COMMENT '错误信息',
+    `start_time`           datetime     NOT NULL COMMENT '开始时间',
+    `end_time`             datetime              DEFAULT NULL COMMENT '结束时间',
+    `create_time`          datetime     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `update_time`          datetime     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_measurement_file_run_id` (`run_id`),
+    KEY                    `idx_measurement_file_run_task` (`task_id`),
+    KEY                    `idx_measurement_file_run_batch` (`batch_id`),
+    KEY                    `idx_measurement_file_run_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='量测文件同步运行历史表';
+
+-- =========================================
+-- 量测文件清单表
+-- =========================================
+CREATE TABLE IF NOT EXISTS `t_seatunnel_web_measurement_file`
+(
+    `id`                   bigint        NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `task_id`              bigint        NOT NULL COMMENT '任务ID',
+    `batch_id`             varchar(100)           DEFAULT NULL COMMENT '批次ID',
+    `run_id`               varchar(100)           DEFAULT NULL COMMENT '运行ID',
+    `source_datasource_id` bigint        NOT NULL COMMENT '源数据源ID',
+    `source_type`          varchar(30)   NOT NULL COMMENT '源类型：LOCAL_FILE / NAS / FTP / SFTP',
+    `parser_type`          varchar(30)   NOT NULL COMMENT '解析器类型',
+    `root_path`            varchar(1000)          DEFAULT NULL COMMENT '扫描根路径',
+    `relative_path`        varchar(1000)          DEFAULT NULL COMMENT '相对路径',
+    `file_name`            varchar(500)           DEFAULT NULL COMMENT '文件名',
+    `full_path`            varchar(2000) NOT NULL COMMENT '完整路径',
+    `file_size`            bigint                 DEFAULT NULL COMMENT '文件大小',
+    `last_modified_time`   datetime               DEFAULT NULL COMMENT '最后修改时间',
+    `checksum`             varchar(128)           DEFAULT NULL COMMENT '校验和',
+    `checksum_type`        varchar(30)            DEFAULT NULL COMMENT '校验和类型',
+    `file_status`          varchar(30)   NOT NULL COMMENT '文件状态',
+    `discover_time`        datetime      NOT NULL COMMENT '发现时间',
+    `parse_time`           datetime               DEFAULT NULL COMMENT '解析时间',
+    `load_time`            datetime               DEFAULT NULL COMMENT '入库时间',
+    `error_message`        mediumtext COMMENT '错误信息',
+    `create_time`          datetime      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `update_time`          datetime      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    KEY                    `idx_task_status` (`task_id`, `file_status`),
+    KEY                    `idx_task_mtime` (`task_id`, `last_modified_time`),
+    KEY                    `idx_task_batch` (`task_id`, `batch_id`),
+    UNIQUE KEY             `uk_task_file_identity` (`task_id`, `full_path`(512), `file_size`, `last_modified_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='量测文件清单表';

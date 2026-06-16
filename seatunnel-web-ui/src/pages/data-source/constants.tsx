@@ -13,6 +13,8 @@ export const COMMON_DB_OPTIONS: DataSourceOptionItem[] = [
   { label: "ORACLE", value: "ORACLE" },
   { label: "PGSQL", value: "POSTGRE_SQL" },
   { label: "StarRocks", value: "STARROCKS" },
+  { label: "LOCAL_FILE", value: "LOCAL_FILE" },
+  { label: "FTP", value: "FTP" },
 ];
 
 export const ENVIRONMENT_OPTIONS: DataSourceOptionItem[] = [
@@ -48,6 +50,35 @@ export const dataSourceGroupList: DataSourceGroup[] = [
         dbType: "STARROCKS",
         type: "STARROCKS",
         connectorType: "StarRocks",
+      },
+    ],
+  },
+  {
+    groupName: "文件数据源",
+    datasourceList: [
+      {
+        onlyDiScript: false,
+        dbType: "LOCAL_FILE",
+        type: "LOCAL_FILE",
+        connectorType: "LocalFile",
+      },
+      {
+        onlyDiScript: false,
+        dbType: "NAS",
+        type: "NAS",
+        connectorType: "LocalFile",
+      },
+      {
+        onlyDiScript: false,
+        dbType: "FTP",
+        type: "FTP",
+        connectorType: "FTP",
+      },
+      {
+        onlyDiScript: false,
+        dbType: "SFTP",
+        type: "SFTP",
+        connectorType: "SFTP",
       },
     ],
   },
