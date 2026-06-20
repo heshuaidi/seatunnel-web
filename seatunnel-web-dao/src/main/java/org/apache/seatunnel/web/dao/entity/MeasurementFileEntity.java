@@ -59,6 +59,20 @@ public class MeasurementFileEntity {
 
     private Date loadTime;
 
+    private String stagingFilePath;
+
+    private Long parsedRowCount;
+
+    private Long loadedRowCount;
+
+    private Integer parseErrorCount;
+
+    private String parserConfigSnapshot;
+
+    private String loadJobId;
+
+    private String loadJobName;
+
     private String errorMessage;
 
     private Date createTime;

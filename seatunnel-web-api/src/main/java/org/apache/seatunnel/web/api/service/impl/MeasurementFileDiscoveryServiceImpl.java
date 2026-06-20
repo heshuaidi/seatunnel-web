@@ -14,6 +14,7 @@ import org.apache.seatunnel.web.api.service.model.IncrementalLockResult;
 import org.apache.seatunnel.web.common.enums.MeasurementDedupStrategy;
 import org.apache.seatunnel.web.common.enums.MeasurementDiscoveryMode;
 import org.apache.seatunnel.web.common.enums.MeasurementFileStatus;
+import org.apache.seatunnel.web.common.enums.MeasurementRunPhase;
 import org.apache.seatunnel.web.common.enums.MeasurementRunStatus;
 import org.apache.seatunnel.web.common.enums.SyncTriggerType;
 import org.apache.seatunnel.web.core.exceptions.ServiceException;
@@ -99,6 +100,7 @@ public class MeasurementFileDiscoveryServiceImpl implements MeasurementFileDisco
                 .taskId(task.getId())
                 .triggerType(safeTriggerType)
                 .status(MeasurementRunStatus.RUNNING)
+                .runPhase(MeasurementRunPhase.DISCOVER)
                 .sourceDatasourceId(task.getSourceDatasourceId())
                 .scannedCount(0)
                 .discoveredCount(0)
@@ -616,11 +618,24 @@ public class MeasurementFileDiscoveryServiceImpl implements MeasurementFileDisco
         vo.setTaskId(entity.getTaskId());
         vo.setTriggerType(entity.getTriggerType());
         vo.setStatus(entity.getStatus());
+        vo.setRunPhase(entity.getRunPhase());
         vo.setSourceDatasourceId(entity.getSourceDatasourceId());
         vo.setScannedCount(entity.getScannedCount());
         vo.setDiscoveredCount(entity.getDiscoveredCount());
         vo.setSkippedCount(entity.getSkippedCount());
         vo.setFailedCount(entity.getFailedCount());
+        vo.setSelectedFileCount(entity.getSelectedFileCount());
+        vo.setParsedFileCount(entity.getParsedFileCount());
+        vo.setLoadedFileCount(entity.getLoadedFileCount());
+        vo.setParseFailedCount(entity.getParseFailedCount());
+        vo.setLoadFailedCount(entity.getLoadFailedCount());
+        vo.setParsedRowCount(entity.getParsedRowCount());
+        vo.setLoadedRowCount(entity.getLoadedRowCount());
+        vo.setStagingDir(entity.getStagingDir());
+        vo.setTargetDatasourceId(entity.getTargetDatasourceId());
+        vo.setTargetDatabase(entity.getTargetDatabase());
+        vo.setTargetTable(entity.getTargetTable());
+        vo.setGeneratedHocon(entity.getGeneratedHocon());
         vo.setErrorMessage(entity.getErrorMessage());
         vo.setStartTime(entity.getStartTime());
         vo.setEndTime(entity.getEndTime());
@@ -650,6 +665,13 @@ public class MeasurementFileDiscoveryServiceImpl implements MeasurementFileDisco
         vo.setDiscoverTime(entity.getDiscoverTime());
         vo.setParseTime(entity.getParseTime());
         vo.setLoadTime(entity.getLoadTime());
+        vo.setStagingFilePath(entity.getStagingFilePath());
+        vo.setParsedRowCount(entity.getParsedRowCount());
+        vo.setLoadedRowCount(entity.getLoadedRowCount());
+        vo.setParseErrorCount(entity.getParseErrorCount());
+        vo.setParserConfigSnapshot(entity.getParserConfigSnapshot());
+        vo.setLoadJobId(entity.getLoadJobId());
+        vo.setLoadJobName(entity.getLoadJobName());
         vo.setErrorMessage(entity.getErrorMessage());
         vo.setCreateTime(entity.getCreateTime());
         vo.setUpdateTime(entity.getUpdateTime());

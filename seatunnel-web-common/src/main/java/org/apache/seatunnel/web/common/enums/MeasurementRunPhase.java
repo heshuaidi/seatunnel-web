@@ -6,12 +6,11 @@ import lombok.Getter;
 
 @AllArgsConstructor
 @Getter
-public enum MeasurementParserType {
-    SIMPLE_CSV("SIMPLE_CSV", "Simple CSV"),
-    SIMPLE_TEXT("SIMPLE_TEXT", "Simple text line"),
-    WAT("WAT", "WAT"),
-    CP("CP", "CP"),
-    CUSTOM("CUSTOM", "CUSTOM");
+public enum MeasurementRunPhase {
+    DISCOVER("DISCOVER", "文件发现"),
+    PARSE("PARSE", "文件解析"),
+    LOAD("LOAD", "数据装载"),
+    PARSE_LOAD("PARSE_LOAD", "解析并装载");
 
     @EnumValue
     private final String code;

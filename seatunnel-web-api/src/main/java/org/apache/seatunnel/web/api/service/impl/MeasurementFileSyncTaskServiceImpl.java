@@ -9,7 +9,10 @@ import org.apache.seatunnel.web.api.service.file.FileSourceClient;
 import org.apache.seatunnel.web.api.service.model.FileDataSourceConfig;
 import org.apache.seatunnel.web.common.enums.MeasurementDedupStrategy;
 import org.apache.seatunnel.web.common.enums.MeasurementDiscoveryMode;
+import org.apache.seatunnel.web.common.enums.MeasurementLoadBatchMode;
+import org.apache.seatunnel.web.common.enums.MeasurementLoadMode;
 import org.apache.seatunnel.web.common.enums.MeasurementParserType;
+import org.apache.seatunnel.web.common.utils.JSONUtils;
 import org.apache.seatunnel.web.core.exceptions.ServiceException;
 import org.apache.seatunnel.web.dao.entity.DataSource;
 import org.apache.seatunnel.web.dao.entity.MeasurementFileSyncTaskEntity;
@@ -31,8 +34,13 @@ import java.util.stream.Collectors;
 public class MeasurementFileSyncTaskServiceImpl implements MeasurementFileSyncTaskService {
 
     private static final String DEFAULT_WATERMARK_KEY = "default";
+    private static final String DEFAULT_PARSE_CHARSET = "UTF-8";
+    private static final String DEFAULT_STAGING_FORMAT = "JSONL";
     private static final int DEFAULT_MAX_FILES_PER_RUN = 1000;
+    private static final int DEFAULT_MAX_FILES_PER_PARSE_RUN = 100;
     private static final int DEFAULT_LOCK_TTL_MINUTES = 60;
+    private static final int DEFAULT_PARSE_MAX_ERROR_ROWS = 100;
+    private static final int DEFAULT_STAGING_RETENTION_DAYS = 7;
 
     @Resource
     private MeasurementFileSyncTaskDao taskDao;
@@ -129,6 +137,18 @@ public class MeasurementFileSyncTaskServiceImpl implements MeasurementFileSyncTa
         if (StringUtils.isBlank(dto.getSourceRootPath()) && StringUtils.isBlank(config.getRootPath())) {
             throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "sourceRootPath");
         }
+        if (StringUtils.isNotBlank(dto.getParserConfigJson()) && !JSONUtils.checkJsonValid(dto.getParserConfigJson(), false)) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "parserConfigJson");
+        }
+        if (dto.getTargetDatasourceId() != null && dto.getTargetDatasourceId() > 0) {
+            DataSource target = dataSourceDao.queryById(dto.getTargetDatasourceId());
+            if (target == null) {
+                throw new ServiceException(Status.DATASOURCE_NOT_EXIST);
+            }
+            if (target.getDbType() != org.apache.seatunnel.web.spi.enums.DbType.STARROCKS) {
+                throw new ServiceException("Measurement load target only supports StarRocks datasource");
+            }
+        }
     }
 
     private MeasurementFileSyncTaskEntity toEntity(MeasurementFileSyncTaskDTO dto) {
@@ -136,6 +156,10 @@ public class MeasurementFileSyncTaskServiceImpl implements MeasurementFileSyncTa
                 .taskName(dto.getTaskName().trim())
                 .taskCode(dto.getTaskCode().trim())
                 .parserType(defaultParserType(dto.getParserType()))
+                .parserConfigJson(trimToNull(dto.getParserConfigJson()))
+                .parseCharset(StringUtils.defaultIfBlank(dto.getParseCharset(), DEFAULT_PARSE_CHARSET))
+                .parseMaxErrorRows(defaultPositive(dto.getParseMaxErrorRows(), DEFAULT_PARSE_MAX_ERROR_ROWS))
+                .parseFailFast(Boolean.TRUE.equals(dto.getParseFailFast()))
                 .sourceDatasourceId(dto.getSourceDatasourceId())
                 .sourceRootPath(trimToNull(dto.getSourceRootPath()))
                 .includePatterns(trimToNull(dto.getIncludePatterns()))
@@ -153,6 +177,22 @@ public class MeasurementFileSyncTaskServiceImpl implements MeasurementFileSyncTa
                 .maxFilesPerRun(defaultPositive(dto.getMaxFilesPerRun(), DEFAULT_MAX_FILES_PER_RUN))
                 .lockTtlMinutes(defaultPositive(dto.getLockTtlMinutes(), DEFAULT_LOCK_TTL_MINUTES))
                 .scheduleCron(trimToNull(dto.getScheduleCron()))
+                .stagingDir(trimToNull(dto.getStagingDir()))
+                .stagingFormat(StringUtils.defaultIfBlank(dto.getStagingFormat(), DEFAULT_STAGING_FORMAT))
+                .stagingRetentionDays(defaultPositive(dto.getStagingRetentionDays(), DEFAULT_STAGING_RETENTION_DAYS))
+                .keepStagingFile(dto.getKeepStagingFile() == null || dto.getKeepStagingFile())
+                .targetDatasourceId(dto.getTargetDatasourceId())
+                .targetDatabase(trimToNull(dto.getTargetDatabase()))
+                .targetTable(trimToNull(dto.getTargetTable()))
+                .loadMode(defaultLoadMode(dto.getLoadMode()))
+                .loadBatchMode(defaultLoadBatchMode(dto.getLoadBatchMode()))
+                .starrocksNodeUrls(trimToNull(dto.getStarrocksNodeUrls()))
+                .starrocksBaseUrl(trimToNull(dto.getStarrocksBaseUrl()))
+                .maxFilesPerParseRun(defaultPositive(dto.getMaxFilesPerParseRun(), DEFAULT_MAX_FILES_PER_PARSE_RUN))
+                .retryParseFailed(Boolean.TRUE.equals(dto.getRetryParseFailed()))
+                .retryLoadFailed(Boolean.TRUE.equals(dto.getRetryLoadFailed()))
+                .cleanupBeforeReload(Boolean.TRUE.equals(dto.getCleanupBeforeReload()))
+                .seatunnelClientId(dto.getSeatunnelClientId())
                 .description(trimToNull(dto.getDescription()))
                 .build();
     }
@@ -163,6 +203,10 @@ public class MeasurementFileSyncTaskServiceImpl implements MeasurementFileSyncTa
         vo.setTaskName(entity.getTaskName());
         vo.setTaskCode(entity.getTaskCode());
         vo.setParserType(entity.getParserType());
+        vo.setParserConfigJson(entity.getParserConfigJson());
+        vo.setParseCharset(entity.getParseCharset());
+        vo.setParseMaxErrorRows(entity.getParseMaxErrorRows());
+        vo.setParseFailFast(entity.getParseFailFast());
         vo.setSourceDatasourceId(entity.getSourceDatasourceId());
         DataSource dataSource = dataSourceDao.queryById(entity.getSourceDatasourceId());
         if (dataSource != null) {
@@ -185,6 +229,28 @@ public class MeasurementFileSyncTaskServiceImpl implements MeasurementFileSyncTa
         vo.setMaxFilesPerRun(entity.getMaxFilesPerRun());
         vo.setLockTtlMinutes(entity.getLockTtlMinutes());
         vo.setScheduleCron(entity.getScheduleCron());
+        vo.setStagingDir(entity.getStagingDir());
+        vo.setStagingFormat(entity.getStagingFormat());
+        vo.setStagingRetentionDays(entity.getStagingRetentionDays());
+        vo.setKeepStagingFile(entity.getKeepStagingFile());
+        vo.setTargetDatasourceId(entity.getTargetDatasourceId());
+        if (entity.getTargetDatasourceId() != null) {
+            DataSource target = dataSourceDao.queryById(entity.getTargetDatasourceId());
+            if (target != null) {
+                vo.setTargetDatasourceName(target.getName());
+            }
+        }
+        vo.setTargetDatabase(entity.getTargetDatabase());
+        vo.setTargetTable(entity.getTargetTable());
+        vo.setLoadMode(entity.getLoadMode());
+        vo.setLoadBatchMode(entity.getLoadBatchMode());
+        vo.setStarrocksNodeUrls(entity.getStarrocksNodeUrls());
+        vo.setStarrocksBaseUrl(entity.getStarrocksBaseUrl());
+        vo.setMaxFilesPerParseRun(entity.getMaxFilesPerParseRun());
+        vo.setRetryParseFailed(entity.getRetryParseFailed());
+        vo.setRetryLoadFailed(entity.getRetryLoadFailed());
+        vo.setCleanupBeforeReload(entity.getCleanupBeforeReload());
+        vo.setSeatunnelClientId(entity.getSeatunnelClientId());
         vo.setDescription(entity.getDescription());
         vo.setCreateTime(entity.getCreateTime());
         vo.setUpdateTime(entity.getUpdateTime());
@@ -209,6 +275,14 @@ public class MeasurementFileSyncTaskServiceImpl implements MeasurementFileSyncTa
 
     private MeasurementDedupStrategy defaultDedupStrategy(MeasurementDedupStrategy dedupStrategy) {
         return dedupStrategy == null ? MeasurementDedupStrategy.PATH_SIZE_MTIME : dedupStrategy;
+    }
+
+    private MeasurementLoadMode defaultLoadMode(MeasurementLoadMode loadMode) {
+        return loadMode == null ? MeasurementLoadMode.APPEND : loadMode;
+    }
+
+    private MeasurementLoadBatchMode defaultLoadBatchMode(MeasurementLoadBatchMode loadBatchMode) {
+        return loadBatchMode == null ? MeasurementLoadBatchMode.ONE_FILE_ONE_JOB : loadBatchMode;
     }
 
     private int defaultNonNegative(Integer value, int defaultValue) {

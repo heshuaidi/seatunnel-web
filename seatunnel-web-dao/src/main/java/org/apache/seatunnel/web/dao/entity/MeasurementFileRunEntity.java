@@ -7,6 +7,7 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.apache.seatunnel.web.common.enums.MeasurementRunPhase;
 import org.apache.seatunnel.web.common.enums.MeasurementRunStatus;
 import org.apache.seatunnel.web.common.enums.SyncTriggerType;
 
@@ -32,6 +33,8 @@ public class MeasurementFileRunEntity {
 
     private MeasurementRunStatus status;
 
+    private MeasurementRunPhase runPhase;
+
     private Long sourceDatasourceId;
 
     private Integer scannedCount;
@@ -41,6 +44,30 @@ public class MeasurementFileRunEntity {
     private Integer skippedCount;
 
     private Integer failedCount;
+
+    private Integer selectedFileCount;
+
+    private Integer parsedFileCount;
+
+    private Integer loadedFileCount;
+
+    private Integer parseFailedCount;
+
+    private Integer loadFailedCount;
+
+    private Long parsedRowCount;
+
+    private Long loadedRowCount;
+
+    private String stagingDir;
+
+    private Long targetDatasourceId;
+
+    private String targetDatabase;
+
+    private String targetTable;
+
+    private String generatedHocon;
 
     private String errorMessage;
 

@@ -148,6 +148,32 @@ public class FileSourceClient {
         }
     }
 
+    public <T> T withInputStream(
+            DbType sourceType,
+            FileDataSourceConfig config,
+            String fullPath,
+            InputStreamHandler<T> handler
+    ) {
+        if (sourceType == null || isBlank(fullPath) || handler == null) {
+            throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "fileInputStream");
+        }
+        validateConfig(sourceType, config);
+        if (sourceType == DbType.LOCAL_FILE || sourceType == DbType.NAS) {
+            try (InputStream inputStream = Files.newInputStream(Path.of(fullPath))) {
+                return handler.handle(inputStream);
+            } catch (Exception e) {
+                throw new ServiceException("Read local file failed: " + e.getMessage(), e);
+            }
+        }
+        if (sourceType == DbType.FTP) {
+            return withFtpInputStream(config, fullPath, handler);
+        }
+        if (sourceType == DbType.SFTP) {
+            return withSftpInputStream(config, fullPath, handler);
+        }
+        throw new ServiceException("Unsupported file datasource type: " + sourceType);
+    }
+
     private FileSourceTestResult testLocal(String rootPath) {
         Path path = Path.of(rootPath).toAbsolutePath().normalize();
         if (!Files.exists(path)) {
@@ -176,6 +202,64 @@ public class FileSourceClient {
                 .rootPath(path.toString())
                 .sampleFiles(samples)
                 .build();
+    }
+
+    private <T> T withFtpInputStream(
+            FileDataSourceConfig config,
+            String fullPath,
+            InputStreamHandler<T> handler
+    ) {
+        FTPClient client = null;
+        InputStream inputStream = null;
+        try {
+            client = connectFtp(config);
+            inputStream = client.retrieveFileStream(fullPath);
+            if (inputStream == null) {
+                throw new ServiceException("FTP retrieve file failed: " + client.getReplyString());
+            }
+            T result = handler.handle(inputStream);
+            inputStream.close();
+            inputStream = null;
+            if (!client.completePendingCommand()) {
+                throw new ServiceException("FTP complete file transfer failed: " + client.getReplyString());
+            }
+            return result;
+        } catch (ServiceException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new ServiceException("Read FTP file failed: " + e.getMessage(), e);
+        } finally {
+            if (inputStream != null) {
+                try {
+                    inputStream.close();
+                } catch (Exception ignored) {
+                }
+            }
+            disconnectFtp(client);
+        }
+    }
+
+    private <T> T withSftpInputStream(
+            FileDataSourceConfig config,
+            String fullPath,
+            InputStreamHandler<T> handler
+    ) {
+        Session session = null;
+        ChannelSftp channel = null;
+        try {
+            session = connectSftpSession(config);
+            channel = (ChannelSftp) session.openChannel("sftp");
+            channel.connect(CONNECT_TIMEOUT_MILLIS);
+            try (InputStream inputStream = channel.get(fullPath)) {
+                return handler.handle(inputStream);
+            }
+        } catch (ServiceException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new ServiceException("Read SFTP file failed: " + e.getMessage(), e);
+        } finally {
+            disconnectSftp(channel, session);
+        }
     }
 
     private FileSourceTestResult testFtp(FileDataSourceConfig config, String rootPath) {
@@ -655,5 +739,10 @@ public class FileSourceClient {
             regex.append('$');
             return regex.toString();
         }
+    }
+
+    @FunctionalInterface
+    public interface InputStreamHandler<T> {
+        T handle(InputStream inputStream) throws Exception;
     }
 }

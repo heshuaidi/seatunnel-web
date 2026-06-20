@@ -52,6 +52,20 @@ public class MeasurementFileVO {
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     private Date loadTime;
 
+    private String stagingFilePath;
+
+    private Long parsedRowCount;
+
+    private Long loadedRowCount;
+
+    private Integer parseErrorCount;
+
+    private String parserConfigSnapshot;
+
+    private String loadJobId;
+
+    private String loadJobName;
+
     private String errorMessage;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")

@@ -12,8 +12,11 @@ public enum MeasurementFileStatus {
     PARSE_PENDING("PARSE_PENDING", "等待解析"),
     PARSING("PARSING", "解析中"),
     PARSED("PARSED", "已解析"),
+    PARSE_FAILED("PARSE_FAILED", "解析失败"),
     LOAD_PENDING("LOAD_PENDING", "等待入库"),
+    LOADING("LOADING", "入库中"),
     LOADED("LOADED", "已入库"),
+    LOAD_FAILED("LOAD_FAILED", "入库失败"),
     FAILED("FAILED", "失败");
 
     @EnumValue

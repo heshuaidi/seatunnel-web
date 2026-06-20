@@ -34,6 +34,7 @@ public class MeasurementFileRunDaoImpl
                         trim(dto.getBatchId()))
                 .eq(dto.getTriggerType() != null, MeasurementFileRunEntity::getTriggerType, dto.getTriggerType())
                 .eq(dto.getStatus() != null, MeasurementFileRunEntity::getStatus, dto.getStatus())
+                .eq(dto.getRunPhase() != null, MeasurementFileRunEntity::getRunPhase, dto.getRunPhase())
                 .orderByDesc(MeasurementFileRunEntity::getStartTime);
         return mapper.selectPage(new Page<>(dto.getPageNo(), dto.getPageSize()), wrapper);
     }

@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.NonNull;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.seatunnel.web.common.enums.MeasurementFileStatus;
 import org.apache.seatunnel.web.dao.entity.MeasurementFileEntity;
 import org.apache.seatunnel.web.dao.mapper.MeasurementFileMapper;
 import org.apache.seatunnel.web.dao.repository.BaseDao;
@@ -13,6 +14,9 @@ import org.apache.seatunnel.web.spi.bean.dto.MeasurementFileQueryDTO;
 import org.springframework.stereotype.Repository;
 
 import java.util.Date;
+import java.util.Collections;
+import java.util.List;
+import java.util.Set;
 
 @Repository
 public class MeasurementFileDaoImpl
@@ -80,6 +84,50 @@ public class MeasurementFileDaoImpl
                 .eq(MeasurementFileEntity::getFullPath, fullPath)
                 .eq(MeasurementFileEntity::getChecksum, checksum)
                 .last("limit 1"));
+    }
+
+    @Override
+    public List<MeasurementFileEntity> listByTaskAndStatuses(
+            Long taskId,
+            Set<MeasurementFileStatus> statuses,
+            List<Long> fileIds,
+            Integer limit
+    ) {
+        if (taskId == null) {
+            return Collections.emptyList();
+        }
+        LambdaQueryWrapper<MeasurementFileEntity> wrapper = new LambdaQueryWrapper<MeasurementFileEntity>()
+                .eq(MeasurementFileEntity::getTaskId, taskId)
+                .in(statuses != null && !statuses.isEmpty(), MeasurementFileEntity::getFileStatus, statuses)
+                .in(fileIds != null && !fileIds.isEmpty(), MeasurementFileEntity::getId, fileIds)
+                .orderByAsc(MeasurementFileEntity::getDiscoverTime)
+                .orderByAsc(MeasurementFileEntity::getId);
+        if (limit != null && limit > 0) {
+            wrapper.last("limit " + limit);
+        }
+        return mapper.selectList(wrapper);
+    }
+
+    @Override
+    public List<MeasurementFileEntity> listStaleByTaskAndStatuses(
+            Long taskId,
+            Set<MeasurementFileStatus> statuses,
+            Date cutoffTime,
+            Integer limit
+    ) {
+        if (taskId == null || cutoffTime == null || statuses == null || statuses.isEmpty()) {
+            return Collections.emptyList();
+        }
+        LambdaQueryWrapper<MeasurementFileEntity> wrapper = new LambdaQueryWrapper<MeasurementFileEntity>()
+                .eq(MeasurementFileEntity::getTaskId, taskId)
+                .in(MeasurementFileEntity::getFileStatus, statuses)
+                .le(MeasurementFileEntity::getUpdateTime, cutoffTime)
+                .orderByAsc(MeasurementFileEntity::getUpdateTime)
+                .orderByAsc(MeasurementFileEntity::getId);
+        if (limit != null && limit > 0) {
+            wrapper.last("limit " + limit);
+        }
+        return mapper.selectList(wrapper);
     }
 
     private String trim(String value) {

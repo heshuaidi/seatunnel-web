@@ -6,12 +6,9 @@ import lombok.Getter;
 
 @AllArgsConstructor
 @Getter
-public enum MeasurementParserType {
-    SIMPLE_CSV("SIMPLE_CSV", "Simple CSV"),
-    SIMPLE_TEXT("SIMPLE_TEXT", "Simple text line"),
-    WAT("WAT", "WAT"),
-    CP("CP", "CP"),
-    CUSTOM("CUSTOM", "CUSTOM");
+public enum MeasurementLoadMode {
+    APPEND("APPEND", "追加写入"),
+    UPSERT("UPSERT", "主键更新");
 
     @EnumValue
     private final String code;

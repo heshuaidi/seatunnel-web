@@ -16,6 +16,14 @@ import java.util.Map;
 @AllArgsConstructor
 public class ParsedMeasurementResult {
 
+    private Boolean success;
+
+    private Long rowCount;
+
+    private Integer errorRowCount;
+
+    private String errorMessage;
+
     @Builder.Default
     private Map<String, Object> fileMetadata = new HashMap<>();
 
