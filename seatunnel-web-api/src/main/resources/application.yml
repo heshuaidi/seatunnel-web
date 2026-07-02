@@ -93,6 +93,13 @@ mybatis-plus:
     banner: false
 
 seatunnel:
+  scheduler:
+    enabled: true
+    token: ${ST_SCHEDULER_TOKEN:}
+    operator: ${ST_SCHEDULER_OPERATOR:scheduler}
+    run-sync-default-timeout-seconds: 600
+    run-sync-default-poll-interval-seconds: 5
+
   sync:
     poll-interval-ms: 3000
     poll-timeout-ms: 600000

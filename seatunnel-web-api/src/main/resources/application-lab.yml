@@ -1,0 +1,5 @@
+seatunnel:
+  scheduler:
+    enabled: true
+    token: ${ST_SCHEDULER_TOKEN:seatunnel-lab-token}
+    operator: ${ST_SCHEDULER_OPERATOR:scheduler}
