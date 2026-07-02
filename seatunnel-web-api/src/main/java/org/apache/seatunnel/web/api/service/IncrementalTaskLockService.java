@@ -6,5 +6,13 @@ public interface IncrementalTaskLockService {
 
     IncrementalLockResult acquireLock(Long taskId, String watermarkKey, String runId, String batchId);
 
+    IncrementalLockResult acquireLock(
+            Long taskId,
+            String watermarkKey,
+            String runId,
+            String batchId,
+            Long ttlMinutes
+    );
+
     boolean releaseLock(Long taskId, String watermarkKey, String lockToken);
 }

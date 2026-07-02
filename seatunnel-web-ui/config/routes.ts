@@ -46,6 +46,12 @@ export default [
     hideInMenu: true,
   },
   {
+    icon: 'folderOpen',
+    name: 'measurement-file-sync',
+    path: '/measurement-file-sync',
+    component: './measurement-file-sync',
+  },
+  {
     icon: 'wifi',
     name: 'data-sync.stream',
     path: '/sync/stream-link-up',

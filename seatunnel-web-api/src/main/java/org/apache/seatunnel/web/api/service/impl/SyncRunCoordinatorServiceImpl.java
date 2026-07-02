@@ -145,12 +145,17 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
     @Override
     public RunResultVO runTask(String taskCode, RunTaskRequest request) {
         RunTaskRequest safeRequest = request == null ? new RunTaskRequest() : request;
-        Map<String, Object> params = nullToEmpty(safeRequest.getParams());
+        Map<String, Object> params = new LinkedHashMap<>(nullToEmpty(safeRequest.getParams()));
+        putIfNotBlank(params, "bizDate", safeRequest.getBizDate());
+        putIfNotBlank(params, "biz_date", safeRequest.getBizDate());
+        String schedulerRunId = firstNonBlank(safeRequest.getSchedulerRunId(), safeRequest.getIdempotencyKey());
+        putIfNotBlank(params, "scheduler_run_id", schedulerRunId);
+        putIfNotBlank(params, "idempotency_key", schedulerRunId);
         SyncTriggerType triggerType = parseTriggerType(safeRequest.getTriggerType(), SyncTriggerType.MANUAL);
         SyncRunMode runMode = parseRunMode(safeRequest.getRunMode(), SyncRunMode.NORMAL);
         boolean waitForFinish = safeRequest.getWaitForFinish() == null || Boolean.TRUE.equals(safeRequest.getWaitForFinish());
 
-        return execute(taskCode, params, triggerType, runMode, waitForFinish, false, null);
+        return execute(taskCode, params, triggerType, runMode, waitForFinish, false, null, schedulerRunId);
     }
 
     @Override
@@ -172,7 +177,8 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
                 SyncRunMode.BACKFILL,
                 waitForFinish,
                 true,
-                request.getAdvanceWatermark()
+                request.getAdvanceWatermark(),
+                null
         );
     }
 
@@ -245,6 +251,7 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
         vo.setBatchId(run.getBatchId());
         vo.setTaskVersionId(run.getTaskVersionId());
         vo.setTriggerType(run.getTriggerType() == null ? null : run.getTriggerType().getCode());
+        vo.setSchedulerRunId(run.getSchedulerRunId());
         vo.setRunStatus(run.getStatus() == null ? null : run.getStatus().getCode());
         vo.setBatchStatus(batch == null || batch.getStatus() == null ? null : batch.getStatus().getCode());
         vo.setSeatunnelJobId(run.getSeatunnelJobId());
@@ -277,17 +284,28 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
             SyncRunMode runMode,
             boolean waitForFinish,
             boolean backfill,
-            Boolean backfillAdvanceWatermark
+            Boolean backfillAdvanceWatermark,
+            String schedulerRunId
     ) {
         SyncTaskEntity task = loadTaskByCode(taskCode);
+        SyncRunEntity idempotentRun = findIdempotentRun(task.getId(), schedulerRunId);
+        if (idempotentRun != null) {
+            log.info("Idempotent sync run hit, taskCode={}, runId={}, batchId={}, idempotencyKey={}, status={}",
+                    task.getTaskCode(),
+                    idempotentRun.getRunId(),
+                    idempotentRun.getBatchId(),
+                    schedulerRunId,
+                    idempotentRun.getStatus() == null ? null : idempotentRun.getStatus().getCode());
+            return toExistingRunResult(task, idempotentRun);
+        }
         validateRunnableTask(task);
         SyncTaskVersionEntity version = loadRunnableVersion(task);
         SyncIncrementalConfigEntity config = loadConfigIfIncremental(task);
         if (!isIncrementalEnabled(task)) {
-            return executeNonIncrementalTask(task, version, params, triggerType, runMode, waitForFinish);
+            return executeNonIncrementalTask(task, version, params, triggerType, runMode, waitForFinish, schedulerRunId);
         }
         if (isFileTask(task, config)) {
-            return executeFileTask(task, version, config, params, triggerType, runMode, waitForFinish);
+            return executeFileTask(task, version, config, params, triggerType, runMode, waitForFinish, schedulerRunId);
         }
 
         WatermarkRange range = null;
@@ -310,7 +328,7 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
             updateBatchStatus(batch, SyncBatchStatus.READY, null);
             auditStatus(null, batch, task, SyncAuditEventType.CREATE_BATCH, "Sync batch is ready", SyncBatchStatus.READY);
 
-            run = createRun(task, version, batch, triggerType, params);
+            run = createRun(task, version, batch, triggerType, schedulerRunId, params);
             syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
                     SyncAuditEventType.CREATE_RUN, "Sync run created", run);
 
@@ -322,7 +340,7 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
             syncRunService.updateGeneratedHocon(run.getRunId(), generatedHocon);
             run.setGeneratedHocon(generatedHocon);
             syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
-                    SyncAuditEventType.RENDER_HOCON, "HOCON rendered", Map.of("hoconHash", hoconHash));
+                    SyncAuditEventType.RENDER_HOCON, "HOCON rendered", hoconHashDetail(hoconHash));
 
             String jobName = buildSeatunnelJobName(task, run);
             syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
@@ -450,13 +468,42 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
         }
     }
 
+    private SyncRunEntity findIdempotentRun(Long taskId, String schedulerRunId) {
+        if (isBlank(schedulerRunId)) {
+            return null;
+        }
+        return syncRunService.getByTaskIdAndSchedulerRunId(taskId, schedulerRunId);
+    }
+
+    private RunResultVO toExistingRunResult(SyncTaskEntity task, SyncRunEntity run) {
+        SyncBatchEntity batch = isBlank(run.getBatchId()) ? null : syncBatchService.getByBatchId(run.getBatchId());
+
+        RunResultVO result = new RunResultVO();
+        result.setRunId(run.getRunId());
+        result.setBatchId(run.getBatchId());
+        result.setTaskId(task.getId());
+        result.setTaskCode(task.getTaskCode());
+        result.setTaskVersionId(run.getTaskVersionId());
+        result.setSeatunnelJobId(run.getSeatunnelJobId());
+        result.setSeatunnelJobName(run.getSeatunnelJobName());
+        result.setRunStatus(run.getStatus() == null ? null : run.getStatus().getCode());
+        result.setBatchStatus(batch == null || batch.getStatus() == null ? null : batch.getStatus().getCode());
+        result.setWatermarkAdvanced(false);
+        result.setSourceCount(run.getSourceCount());
+        result.setSinkCount(run.getSinkCount());
+        result.setErrorCount(run.getErrorCount());
+        result.setErrorMessage(run.getErrorMessage());
+        return result;
+    }
+
     private RunResultVO executeNonIncrementalTask(
             SyncTaskEntity task,
             SyncTaskVersionEntity version,
             Map<String, Object> params,
             SyncTriggerType triggerType,
             SyncRunMode runMode,
-            boolean waitForFinish
+            boolean waitForFinish,
+            String schedulerRunId
     ) {
         SyncBatchEntity batch = null;
         SyncRunEntity run = null;
@@ -471,7 +518,7 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
             auditStatus(null, batch, task, SyncAuditEventType.CREATE_BATCH,
                     "Non-incremental sync batch is ready", SyncBatchStatus.READY);
 
-            run = createRun(task, version, batch, triggerType, params);
+            run = createRun(task, version, batch, triggerType, schedulerRunId, params);
             syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
                     SyncAuditEventType.CREATE_RUN, "Non-incremental sync run created", run);
 
@@ -483,7 +530,7 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
             syncRunService.updateGeneratedHocon(run.getRunId(), generatedHocon);
             run.setGeneratedHocon(generatedHocon);
             syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
-                    SyncAuditEventType.RENDER_HOCON, "Non-incremental HOCON rendered", Map.of("hoconHash", hoconHash));
+                    SyncAuditEventType.RENDER_HOCON, "Non-incremental HOCON rendered", hoconHashDetail(hoconHash));
 
             String jobName = buildSeatunnelJobName(task, run);
             syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
@@ -608,7 +655,7 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
             updateBatchStatus(batch, SyncBatchStatus.READY, null);
             auditStatus(null, batch, task, SyncAuditEventType.CREATE_BATCH, "Rerun sync batch is ready", SyncBatchStatus.READY);
 
-            run = createRun(task, version, batch, triggerType, params);
+            run = createRun(task, version, batch, triggerType, null, params);
             syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
                     SyncAuditEventType.CREATE_RUN, "Rerun sync run created", run);
 
@@ -620,7 +667,7 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
             syncRunService.updateGeneratedHocon(run.getRunId(), generatedHocon);
             run.setGeneratedHocon(generatedHocon);
             syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
-                    SyncAuditEventType.RENDER_HOCON, "Rerun HOCON rendered", Map.of("hoconHash", hoconHash));
+                    SyncAuditEventType.RENDER_HOCON, "Rerun HOCON rendered", hoconHashDetail(hoconHash));
 
             String jobName = buildSeatunnelJobName(task, run);
             syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
@@ -748,7 +795,8 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
             Map<String, Object> params,
             SyncTriggerType triggerType,
             SyncRunMode runMode,
-            boolean waitForFinish
+            boolean waitForFinish,
+            String schedulerRunId
     ) {
         SyncBatchEntity batch = null;
         SyncRunEntity run = null;
@@ -773,7 +821,7 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
             batch.setSourceCount(claimedCount);
             batch.setErrorCount(0L);
 
-            run = createRun(task, version, batch, triggerType, params);
+            run = createRun(task, version, batch, triggerType, schedulerRunId, params);
             syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
                     SyncAuditEventType.CREATE_RUN, "File sync run created", run);
             syncRunService.updateMetrics(run.getRunId(), claimedCount, null, 0L);
@@ -812,7 +860,7 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
             syncRunService.updateGeneratedHocon(run.getRunId(), generatedHocon);
             run.setGeneratedHocon(generatedHocon);
             syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
-                    SyncAuditEventType.RENDER_HOCON, "File sync HOCON rendered", Map.of("hoconHash", hoconHash));
+                    SyncAuditEventType.RENDER_HOCON, "File sync HOCON rendered", hoconHashDetail(hoconHash));
 
             String jobName = buildSeatunnelJobName(task, run);
             syncAuditService.appendInfo(run.getRunId(), batch.getBatchId(), task.getId(), task.getTaskCode(),
@@ -928,6 +976,7 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
             SyncTaskVersionEntity version,
             SyncBatchEntity batch,
             SyncTriggerType triggerType,
+            String schedulerRunId,
             Map<String, Object> params
     ) {
         Date now = now();
@@ -937,6 +986,7 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
                 .taskVersionId(version.getId())
                 .batchId(batch.getBatchId())
                 .triggerType(triggerType)
+                .schedulerRunId(schedulerRunId)
                 .runParamJson(JSONUtils.toJsonString(params))
                 .status(SyncRunStatus.CREATED)
                 .createTime(now)
@@ -1001,6 +1051,15 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
         variables.put("batch_id", batch == null ? null : batch.getBatchId());
         variables.put("trigger_type", triggerType.getCode());
         variables.put("run_mode", runMode.getCode());
+        String schedulerRunId = run == null ? valueToString(variables.get("scheduler_run_id")) : run.getSchedulerRunId();
+        if (isBlank(schedulerRunId)) {
+            schedulerRunId = valueToString(variables.get("idempotency_key"));
+        }
+        if (isBlank(schedulerRunId)) {
+            schedulerRunId = "";
+        }
+        variables.put("scheduler_run_id", schedulerRunId);
+        variables.put("idempotency_key", schedulerRunId);
         if (range == null) {
             variables.put("last_watermark", "");
             variables.put("previous_watermark", "");
@@ -1023,7 +1082,12 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
             variables.put("watermark_key", range.getWatermarkKey());
         }
         variables.put("lookback_seconds", config == null || config.getLookbackSeconds() == null ? 0 : config.getLookbackSeconds());
-        variables.put("biz_date", LocalDate.now().toString());
+        Object bizDate = variables.get("biz_date") == null ? variables.get("bizDate") : variables.get("biz_date");
+        if (bizDate == null) {
+            bizDate = LocalDate.now().toString();
+        }
+        variables.put("biz_date", bizDate);
+        variables.put("bizDate", bizDate);
         variables.put("watermark_field", config == null || isBlank(config.getWatermarkField()) ? "" : config.getWatermarkField());
         if (config != null) {
             putFileVariables(variables, config, batchFiles);
@@ -1207,6 +1271,13 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
         return detail;
     }
 
+    private Map<String, Object> hoconHashDetail(String hoconHash) {
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("hoconHash", hoconHash);
+        detail.put("renderedHoconHash", hoconHash);
+        return detail;
+    }
+
     private SyncTaskEntity loadTaskByCode(String taskCode) {
         if (isBlank(taskCode)) {
             throw new ServiceException(Status.REQUEST_PARAMS_NOT_VALID_ERROR, "taskCode");
@@ -1357,6 +1428,14 @@ public class SyncRunCoordinatorServiceImpl extends SyncServiceSupport implements
 
     private Map<String, Object> nullToEmpty(Map<String, Object> value) {
         return value == null ? Map.of() : value;
+    }
+
+    private String firstNonBlank(String first, String second) {
+        return isBlank(first) ? second : first;
+    }
+
+    private String valueToString(Object value) {
+        return value == null ? null : String.valueOf(value);
     }
 
     private void putIfNotBlank(Map<String, Object> params, String key, String value) {

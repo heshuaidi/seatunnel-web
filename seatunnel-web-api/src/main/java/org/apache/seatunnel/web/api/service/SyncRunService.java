@@ -15,6 +15,8 @@ public interface SyncRunService {
 
     SyncRunEntity getByRunId(String runId);
 
+    SyncRunEntity getByTaskIdAndSchedulerRunId(Long taskId, String schedulerRunId);
+
     List<SyncRunEntity> listByTaskId(Long taskId);
 
     Boolean updateStatus(String runId, SyncRunStatus status, String errorMessage);

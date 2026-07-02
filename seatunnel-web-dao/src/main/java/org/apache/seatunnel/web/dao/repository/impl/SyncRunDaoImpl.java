@@ -38,6 +38,19 @@ public class SyncRunDaoImpl extends BaseDao<SyncRunEntity, SyncRunMapper> implem
     }
 
     @Override
+    public SyncRunEntity queryByTaskIdAndSchedulerRunId(Long taskId, String schedulerRunId) {
+        if (taskId == null || isBlank(schedulerRunId)) {
+            return null;
+        }
+        return syncRunMapper.selectOne(
+                new LambdaQueryWrapper<SyncRunEntity>()
+                        .eq(SyncRunEntity::getTaskId, taskId)
+                        .eq(SyncRunEntity::getSchedulerRunId, schedulerRunId)
+                        .last("limit 1")
+        );
+    }
+
+    @Override
     public List<SyncRunEntity> listByTaskId(Long taskId) {
         if (taskId == null) {
             return Collections.emptyList();

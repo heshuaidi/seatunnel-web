@@ -205,6 +205,7 @@ CREATE TABLE IF NOT EXISTS `t_seatunnel_web_sync_run`
     `update_time`        datetime     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_sync_run_id` (`run_id`),
+    UNIQUE KEY `uk_sync_run_task_scheduler` (`task_id`, `scheduler_run_id`),
     KEY                  `idx_sync_run_task` (`task_id`),
     KEY                  `idx_sync_run_batch` (`batch_id`),
     KEY                  `idx_sync_run_status` (`status`)
@@ -318,3 +319,175 @@ CREATE TABLE IF NOT EXISTS `t_seatunnel_web_sync_file_item`
     KEY                  `idx_sync_file_batch` (`batch_id`),
     KEY                  `idx_sync_file` (`task_id`, `file_path`(255), `file_size`, `last_modified_time`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='通用增量同步文件清单表';
+
+-- =========================================
+-- 量测文件同步任务表
+-- =========================================
+CREATE TABLE IF NOT EXISTS `t_seatunnel_web_measurement_file_task`
+(
+    `id`                     bigint       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `task_name`              varchar(200) NOT NULL COMMENT '任务名称',
+    `task_code`              varchar(100) NOT NULL COMMENT '任务编码',
+    `parser_type`            varchar(30)  NOT NULL COMMENT '解析器类型：SIMPLE_CSV / SIMPLE_TEXT / WAT / CP / CUSTOM',
+    `parser_config_json`     mediumtext            DEFAULT NULL COMMENT '解析器参数 JSON',
+    `parse_charset`          varchar(50)  NOT NULL DEFAULT 'UTF-8' COMMENT '解析字符集',
+    `parse_max_error_rows`   int          NOT NULL DEFAULT 100 COMMENT '最多保留解析错误行数',
+    `parse_fail_fast`        tinyint(1)   NOT NULL DEFAULT 0 COMMENT '解析遇错是否快速失败',
+    `source_datasource_id`   bigint       NOT NULL COMMENT '文件源数据源ID',
+    `source_root_path`       varchar(1000)         DEFAULT NULL COMMENT '任务级源根路径，空则使用数据源 rootPath',
+    `include_patterns`       varchar(1000)         DEFAULT NULL COMMENT '包含文件 glob，逗号或换行分隔',
+    `exclude_patterns`       varchar(1000)         DEFAULT NULL COMMENT '排除文件 glob，逗号或换行分隔',
+    `recursive`              tinyint(1)   NOT NULL DEFAULT 0 COMMENT '是否递归扫描',
+    `max_depth`              int                   DEFAULT NULL COMMENT '递归最大深度',
+    `min_last_modified_time` datetime              DEFAULT NULL COMMENT '最小文件最后修改时间',
+    `file_stable_seconds`    int          NOT NULL DEFAULT 0 COMMENT '文件稳定秒数',
+    `enabled`                tinyint(1)   NOT NULL DEFAULT 1 COMMENT '是否启用',
+    `discovery_mode`         varchar(30)  NOT NULL DEFAULT 'FULL_SCAN' COMMENT '发现模式',
+    `watermark_key`          varchar(100) NOT NULL DEFAULT 'default' COMMENT 'watermark key',
+    `current_watermark`      varchar(500)          DEFAULT NULL COMMENT '当前 watermark',
+    `dedup_strategy`         varchar(30)  NOT NULL DEFAULT 'PATH_SIZE_MTIME' COMMENT '去重策略',
+    `checksum_enabled`       tinyint(1)   NOT NULL DEFAULT 0 COMMENT '是否启用 checksum',
+    `max_files_per_run`      int          NOT NULL DEFAULT 1000 COMMENT '单次最大处理文件数',
+    `lock_ttl_minutes`       int          NOT NULL DEFAULT 60 COMMENT '锁 TTL 分钟',
+    `schedule_cron`          varchar(100)          DEFAULT NULL COMMENT '调度 cron',
+    `staging_dir`            varchar(1000)          DEFAULT NULL COMMENT 'staging 目录，需 SeaTunnel worker 可访问',
+    `staging_format`         varchar(30)  NOT NULL DEFAULT 'JSONL' COMMENT 'staging 格式',
+    `staging_retention_days` int          NOT NULL DEFAULT 7 COMMENT 'staging 文件保留天数',
+    `keep_staging_file`      tinyint(1)   NOT NULL DEFAULT 1 COMMENT '是否保留 staging 文件',
+    `target_datasource_id`   bigint                DEFAULT NULL COMMENT 'StarRocks 目标数据源ID',
+    `target_database`        varchar(200)          DEFAULT NULL COMMENT 'StarRocks 目标库',
+    `target_table`           varchar(200)          DEFAULT NULL COMMENT 'StarRocks 目标表',
+    `load_mode`              varchar(30)  NOT NULL DEFAULT 'APPEND' COMMENT '装载模式：APPEND / UPSERT',
+    `load_batch_mode`        varchar(30)  NOT NULL DEFAULT 'ONE_FILE_ONE_JOB' COMMENT '装载批模式',
+    `starrocks_node_urls`    varchar(1000)         DEFAULT NULL COMMENT 'StarRocks FE/HTTP nodeUrls 覆盖',
+    `starrocks_base_url`     varchar(1000)         DEFAULT NULL COMMENT 'StarRocks JDBC base-url 覆盖',
+    `max_files_per_parse_run` int         NOT NULL DEFAULT 100 COMMENT '单次最大解析文件数',
+    `retry_parse_failed`     tinyint(1)   NOT NULL DEFAULT 0 COMMENT '是否重试解析失败文件',
+    `retry_load_failed`      tinyint(1)   NOT NULL DEFAULT 0 COMMENT '是否重试装载失败文件',
+    `cleanup_before_reload`  tinyint(1)   NOT NULL DEFAULT 0 COMMENT '强制重跑前是否清理目标表数据，预留',
+    `seatunnel_client_id`    bigint                DEFAULT NULL COMMENT 'SeaTunnel Client ID，空则使用默认客户端',
+    `description`            varchar(1000)         DEFAULT NULL COMMENT '描述',
+    `create_time`            datetime     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `update_time`            datetime     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_measurement_file_task_code` (`task_code`),
+    KEY                      `idx_measurement_file_task_ds` (`source_datasource_id`),
+    KEY                      `idx_measurement_file_task_enabled` (`enabled`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='量测文件同步任务表';
+
+-- =========================================
+-- 量测文件同步 Run History 表
+-- =========================================
+CREATE TABLE IF NOT EXISTS `t_seatunnel_web_measurement_file_run`
+(
+    `id`                   bigint       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `run_id`               varchar(100) NOT NULL COMMENT '运行ID',
+    `batch_id`             varchar(100)          DEFAULT NULL COMMENT '批次ID',
+    `task_id`              bigint       NOT NULL COMMENT '任务ID',
+    `trigger_type`         varchar(30)  NOT NULL COMMENT '触发类型：MANUAL / SCHEDULED',
+    `status`               varchar(30)  NOT NULL COMMENT '运行状态：SUCCESS / FAILED / SKIPPED / RUNNING',
+    `run_phase`            varchar(30)  NOT NULL DEFAULT 'DISCOVER' COMMENT '运行阶段：DISCOVER / PARSE / LOAD / PARSE_LOAD',
+    `source_datasource_id` bigint       NOT NULL COMMENT '源数据源ID',
+    `scanned_count`        int          NOT NULL DEFAULT 0 COMMENT '扫描文件数',
+    `discovered_count`     int          NOT NULL DEFAULT 0 COMMENT '新发现文件数',
+    `skipped_count`        int          NOT NULL DEFAULT 0 COMMENT '跳过文件数',
+    `failed_count`         int          NOT NULL DEFAULT 0 COMMENT '失败文件数',
+    `selected_file_count`  int          NOT NULL DEFAULT 0 COMMENT '选择处理文件数',
+    `parsed_file_count`    int          NOT NULL DEFAULT 0 COMMENT '解析成功文件数',
+    `loaded_file_count`    int          NOT NULL DEFAULT 0 COMMENT '装载成功文件数',
+    `parse_failed_count`   int          NOT NULL DEFAULT 0 COMMENT '解析失败文件数',
+    `load_failed_count`    int          NOT NULL DEFAULT 0 COMMENT '装载失败文件数',
+    `parsed_row_count`     bigint       NOT NULL DEFAULT 0 COMMENT '解析行数',
+    `loaded_row_count`     bigint       NOT NULL DEFAULT 0 COMMENT '装载行数',
+    `staging_dir`          varchar(1000)         DEFAULT NULL COMMENT '本次 staging 目录',
+    `target_datasource_id` bigint                DEFAULT NULL COMMENT '目标数据源ID',
+    `target_database`      varchar(200)          DEFAULT NULL COMMENT '目标库',
+    `target_table`         varchar(200)          DEFAULT NULL COMMENT '目标表',
+    `generated_hocon`      mediumtext COMMENT '脱敏后的 SeaTunnel HOCON',
+    `error_message`        mediumtext COMMENT '错误信息',
+    `start_time`           datetime     NOT NULL COMMENT '开始时间',
+    `end_time`             datetime              DEFAULT NULL COMMENT '结束时间',
+    `create_time`          datetime     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `update_time`          datetime     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_measurement_file_run_id` (`run_id`),
+    KEY                    `idx_measurement_file_run_task` (`task_id`),
+    KEY                    `idx_measurement_file_run_batch` (`batch_id`),
+    KEY                    `idx_measurement_file_run_status` (`status`),
+    KEY                    `idx_measurement_file_run_phase` (`task_id`, `run_phase`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='量测文件同步运行历史表';
+
+-- =========================================
+-- 量测文件清单表
+-- =========================================
+CREATE TABLE IF NOT EXISTS `t_seatunnel_web_measurement_file`
+(
+    `id`                   bigint        NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `task_id`              bigint        NOT NULL COMMENT '任务ID',
+    `batch_id`             varchar(100)           DEFAULT NULL COMMENT '批次ID',
+    `run_id`               varchar(100)           DEFAULT NULL COMMENT '运行ID',
+    `source_datasource_id` bigint        NOT NULL COMMENT '源数据源ID',
+    `source_type`          varchar(30)   NOT NULL COMMENT '源类型：LOCAL_FILE / NAS / FTP / SFTP',
+    `parser_type`          varchar(30)   NOT NULL COMMENT '解析器类型',
+    `root_path`            varchar(1000)          DEFAULT NULL COMMENT '扫描根路径',
+    `relative_path`        varchar(1000)          DEFAULT NULL COMMENT '相对路径',
+    `file_name`            varchar(500)           DEFAULT NULL COMMENT '文件名',
+    `full_path`            varchar(2000) NOT NULL COMMENT '完整路径',
+    `file_size`            bigint                 DEFAULT NULL COMMENT '文件大小',
+    `last_modified_time`   datetime               DEFAULT NULL COMMENT '最后修改时间',
+    `checksum`             varchar(128)           DEFAULT NULL COMMENT '校验和',
+    `checksum_type`        varchar(30)            DEFAULT NULL COMMENT '校验和类型',
+    `file_status`          varchar(30)   NOT NULL COMMENT '文件状态',
+    `discover_time`        datetime      NOT NULL COMMENT '发现时间',
+    `parse_time`           datetime               DEFAULT NULL COMMENT '解析时间',
+    `load_time`            datetime               DEFAULT NULL COMMENT '入库时间',
+    `staging_file_path`    varchar(2000)          DEFAULT NULL COMMENT 'staging JSONL 文件路径',
+    `parsed_row_count`     bigint                 DEFAULT NULL COMMENT '解析行数',
+    `loaded_row_count`     bigint                 DEFAULT NULL COMMENT '装载行数',
+    `parse_error_count`    int                    DEFAULT NULL COMMENT '解析错误行数',
+    `parser_config_snapshot` mediumtext COMMENT '解析配置快照',
+    `load_job_id`          varchar(100)           DEFAULT NULL COMMENT 'SeaTunnel 装载 Job ID',
+    `load_job_name`        varchar(200)           DEFAULT NULL COMMENT 'SeaTunnel 装载 Job 名称',
+    `error_message`        mediumtext COMMENT '错误信息',
+    `create_time`          datetime      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `update_time`          datetime      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    KEY                    `idx_task_status` (`task_id`, `file_status`),
+    KEY                    `idx_task_mtime` (`task_id`, `last_modified_time`),
+    KEY                    `idx_task_batch` (`task_id`, `batch_id`),
+    UNIQUE KEY             `uk_task_file_identity` (`task_id`, `full_path`(512), `file_size`, `last_modified_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='量测文件清单表';
+
+-- Existing deployments that already imported an earlier Measurement File Sync
+-- DDL can apply seatunnel_measurement_file_sync_upgrade_mysql.sql. That upgrade
+-- script checks information_schema before ALTER TABLE, so it can be re-run.
+
+-- Recommended StarRocks target table for SIMPLE_CSV / SIMPLE_TEXT staging loads.
+-- DUPLICATE KEY is convenient for testing, but repeated forced reloads can insert
+-- duplicate rows. Production should prefer a Primary Key table on (file_id,row_no)
+-- or implement cleanup_before_reload before reloading a file.
+--
+-- CREATE TABLE IF NOT EXISTS st_test.measurement_item_result (
+--   file_id BIGINT NOT NULL,
+--   task_id BIGINT NOT NULL,
+--   batch_id VARCHAR(100),
+--   run_id VARCHAR(100),
+--   source_file_name VARCHAR(500),
+--   source_relative_path VARCHAR(1000),
+--   parser_type VARCHAR(30),
+--   row_no BIGINT,
+--   lot_id VARCHAR(100),
+--   wafer_id VARCHAR(100),
+--   item_name VARCHAR(200),
+--   item_value DOUBLE,
+--   item_unit VARCHAR(50),
+--   raw_line VARCHAR(65533),
+--   parse_time DATETIME,
+--   ingest_time DATETIME
+-- )
+-- ENGINE=OLAP
+-- DUPLICATE KEY(file_id, row_no)
+-- DISTRIBUTED BY HASH(file_id) BUCKETS 8
+-- PROPERTIES (
+--   "replication_num" = "1"
+-- );

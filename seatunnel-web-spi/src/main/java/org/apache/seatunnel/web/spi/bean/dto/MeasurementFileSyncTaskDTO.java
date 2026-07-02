@@ -1,0 +1,103 @@
+package org.apache.seatunnel.web.spi.bean.dto;
+
+import com.fasterxml.jackson.annotation.JsonFormat;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
+import org.apache.seatunnel.web.common.enums.MeasurementDedupStrategy;
+import org.apache.seatunnel.web.common.enums.MeasurementDiscoveryMode;
+import org.apache.seatunnel.web.common.enums.MeasurementLoadBatchMode;
+import org.apache.seatunnel.web.common.enums.MeasurementLoadMode;
+import org.apache.seatunnel.web.common.enums.MeasurementParserType;
+import org.apache.seatunnel.web.spi.bean.dto.pagination.PaginationBaseDTO;
+
+import java.util.Date;
+
+@Data
+@EqualsAndHashCode(callSuper = true)
+public class MeasurementFileSyncTaskDTO extends PaginationBaseDTO {
+
+    private Long id;
+
+    private String taskName;
+
+    private String taskCode;
+
+    private MeasurementParserType parserType;
+
+    private String parserConfigJson;
+
+    private String parseCharset;
+
+    private Integer parseMaxErrorRows;
+
+    private Boolean parseFailFast;
+
+    private Long sourceDatasourceId;
+
+    private String sourceRootPath;
+
+    private String includePatterns;
+
+    private String excludePatterns;
+
+    private Boolean recursive;
+
+    private Integer maxDepth;
+
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
+    private Date minLastModifiedTime;
+
+    private Integer fileStableSeconds;
+
+    private Boolean enabled;
+
+    private MeasurementDiscoveryMode discoveryMode;
+
+    private String watermarkKey;
+
+    private String currentWatermark;
+
+    private MeasurementDedupStrategy dedupStrategy;
+
+    private Boolean checksumEnabled;
+
+    private Integer maxFilesPerRun;
+
+    private Integer lockTtlMinutes;
+
+    private String scheduleCron;
+
+    private String stagingDir;
+
+    private String stagingFormat;
+
+    private Integer stagingRetentionDays;
+
+    private Boolean keepStagingFile;
+
+    private Long targetDatasourceId;
+
+    private String targetDatabase;
+
+    private String targetTable;
+
+    private MeasurementLoadMode loadMode;
+
+    private MeasurementLoadBatchMode loadBatchMode;
+
+    private String starrocksNodeUrls;
+
+    private String starrocksBaseUrl;
+
+    private Integer maxFilesPerParseRun;
+
+    private Boolean retryParseFailed;
+
+    private Boolean retryLoadFailed;
+
+    private Boolean cleanupBeforeReload;
+
+    private Long seatunnelClientId;
+
+    private String description;
+}

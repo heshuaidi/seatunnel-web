@@ -33,6 +33,14 @@ public class DatasourcePluginServiceImpl implements DatasourcePluginService {
         validatePluginType(pluginType);
 
         DbType dbType = parseDbType(pluginType);
+        if (isFileDatasource(dbType)) {
+            PluginConfigResponse response = new PluginConfigResponse();
+            response.setPluginType(dbType);
+            response.setFormFields(fileDatasourceFields(dbType));
+            response.setInstallRequired(false);
+            return response;
+        }
+
         DataSourcePluginConfig config = dataSourcePluginConfigDao.queryByPluginType(dbType);
         
         // If config not found, return empty response with install hint
@@ -59,6 +67,10 @@ public class DatasourcePluginServiceImpl implements DatasourcePluginService {
         validatePluginType(pluginType);
 
         DbType dbType = parseDbType(pluginType);
+
+        if (isFileDatasource(dbType)) {
+            return;
+        }
 
         if (dataSourcePluginConfigDao.existsByPluginType(dbType)) {
             return;
@@ -269,5 +281,70 @@ public class DatasourcePluginServiceImpl implements DatasourcePluginService {
             return value.asDouble();
         }
         return value.toString();
+    }
+
+    private boolean isFileDatasource(DbType dbType) {
+        return dbType == DbType.LOCAL_FILE
+                || dbType == DbType.NAS
+                || dbType == DbType.FTP
+                || dbType == DbType.SFTP;
+    }
+
+    private List<FormFieldConfig> fileDatasourceFields(DbType dbType) {
+        List<FormFieldConfig> fields = new ArrayList<>();
+        if (dbType == DbType.LOCAL_FILE || dbType == DbType.NAS) {
+            fields.add(field("rootPath", "Root Path", FieldType.INPUT,
+                    "/mnt/nas/wat", null, true));
+            fields.add(field("enabled", "Enabled", FieldType.SWITCH,
+                    null, true, false));
+            fields.add(field("description", "Description", FieldType.TEXTAREA,
+                    "Optional datasource description", null, false));
+            return fields;
+        }
+
+        fields.add(field("host", "Host", FieldType.INPUT,
+                "ftp.example.com", null, true));
+        fields.add(field("port", "Port", FieldType.NUMBER,
+                dbType == DbType.SFTP ? "22" : "21", dbType == DbType.SFTP ? 22 : 21, true));
+        fields.add(field("username", "Username", FieldType.INPUT,
+                "username", null, true));
+        fields.add(field("password", "Password", FieldType.PASSWORD,
+                "password", null, false));
+        fields.add(field("rootPath", "Root Path", FieldType.INPUT,
+                "/wat", null, true));
+        if (dbType == DbType.FTP) {
+            fields.add(field("passiveMode", "Passive Mode", FieldType.SWITCH,
+                    null, true, false));
+        }
+        fields.add(field("enabled", "Enabled", FieldType.SWITCH,
+                null, true, false));
+        fields.add(field("description", "Description", FieldType.TEXTAREA,
+                "Optional datasource description", null, false));
+        return fields;
+    }
+
+    private FormFieldConfig field(
+            String key,
+            String label,
+            FieldType type,
+            String placeholder,
+            Object defaultValue,
+            boolean required
+    ) {
+        FormFieldConfig field = new FormFieldConfig();
+        field.setKey(key);
+        field.setLabel(label);
+        field.setType(type);
+        field.setPlaceholder(placeholder);
+        field.setDefaultValue(defaultValue);
+        List<Rule> rules = new ArrayList<>();
+        if (required) {
+            Rule rule = new Rule();
+            rule.setRequired(true);
+            rule.setMessage(label + " is required");
+            rules.add(rule);
+        }
+        field.setRules(rules);
+        return field;
     }
 }

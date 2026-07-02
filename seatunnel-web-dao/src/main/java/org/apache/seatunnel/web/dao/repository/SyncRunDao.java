@@ -9,6 +9,8 @@ public interface SyncRunDao extends IDao<SyncRunEntity> {
 
     SyncRunEntity queryByRunId(String runId);
 
+    SyncRunEntity queryByTaskIdAndSchedulerRunId(Long taskId, String schedulerRunId);
+
     List<SyncRunEntity> listByTaskId(Long taskId);
 
     boolean updateStatus(String runId, SyncRunStatus status, String errorMessage);

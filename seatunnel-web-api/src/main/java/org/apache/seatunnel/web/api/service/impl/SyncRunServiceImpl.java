@@ -56,6 +56,14 @@ public class SyncRunServiceImpl extends SyncServiceSupport implements SyncRunSer
     }
 
     @Override
+    public SyncRunEntity getByTaskIdAndSchedulerRunId(Long taskId, String schedulerRunId) {
+        if (taskId == null || isBlank(schedulerRunId)) {
+            return null;
+        }
+        return syncRunDao.queryByTaskIdAndSchedulerRunId(taskId, schedulerRunId);
+    }
+
+    @Override
     public List<SyncRunEntity> listByTaskId(Long taskId) {
         requireId(taskId);
         return syncRunDao.listByTaskId(taskId);
