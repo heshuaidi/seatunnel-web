@@ -205,6 +205,7 @@ CREATE TABLE IF NOT EXISTS `t_seatunnel_web_sync_run`
     `update_time`        datetime     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_sync_run_id` (`run_id`),
+    UNIQUE KEY `uk_sync_run_task_scheduler` (`task_id`, `scheduler_run_id`),
     KEY                  `idx_sync_run_task` (`task_id`),
     KEY                  `idx_sync_run_batch` (`batch_id`),
     KEY                  `idx_sync_run_status` (`status`)

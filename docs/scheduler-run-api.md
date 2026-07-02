@@ -32,6 +32,132 @@ seatunnel:
 
 ## APIs
 
+### DolphinScheduler Sync Control APIs
+
+These APIs trigger the existing sync-control task by `taskCode`. They generate the
+`batchId` inside seatunnel-web, render it into the HOCON context as `batch_id`,
+submit the SeaTunnel Zeta job, and return immediately after submit.
+
+```http
+POST /api/v1/dolphinscheduler/sync/tasks/{taskCode}/run
+GET  /api/v1/dolphinscheduler/sync/runs/{extractRunId}
+```
+
+Required token header, using the same `seatunnel.scheduler.token` setting as the
+generic scheduler API:
+
+```http
+X-ST-SCHEDULER-TOKEN: <configured-token>
+```
+
+`Authorization: Bearer <configured-token>` is also accepted for Shell Task usage.
+
+Run request:
+
+```json
+{
+  "triggerType": "DOLPHINSCHEDULER",
+  "runMode": "SCHEDULE",
+  "version": "latest",
+  "bizDate": "2026-07-02",
+  "idempotencyKey": "ds-process-instance-10001",
+  "params": {}
+}
+```
+
+Run response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "extractRunId": "oracle_to_starrocks_inline_run_20260702010000_10086",
+    "batchId": "oracle_to_starrocks_inline_20260702010000_000001",
+    "taskCode": "oracle_to_starrocks_inline",
+    "status": "SUBMITTED",
+    "seatunnelJobId": "xxx"
+  }
+}
+```
+
+Status response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "extractRunId": "oracle_to_starrocks_inline_run_20260702010000_10086",
+    "batchId": "oracle_to_starrocks_inline_20260702010000_000001",
+    "taskCode": "oracle_to_starrocks_inline",
+    "status": "SUCCESS",
+    "seatunnelJobId": "xxx",
+    "errorMessage": null,
+    "startTime": "2026-07-02 01:00:00",
+    "endTime": "2026-07-02 01:03:20"
+  }
+}
+```
+
+The status field is normalized to:
+
+```text
+SUBMITTED
+RUNNING
+SUCCESS
+FAILED
+CANCELED
+```
+
+Idempotency:
+
+- `idempotencyKey` is stored in `t_seatunnel_web_sync_run.scheduler_run_id`.
+- A duplicate `taskCode + idempotencyKey` returns the existing `extractRunId`
+  and `batchId`.
+- Duplicate requests do not create a new batch, do not submit SeaTunnel again,
+  and do not advance watermark again.
+
+Watermark behavior stays the same as sync-control:
+
+- run creation reads the current watermark.
+- HOCON is rendered from the selected range and includes `batch_id`.
+- only successful runs advance watermark.
+- failed, canceled, timed out, or duplicated idempotent requests do not advance watermark.
+
+Curl:
+
+```bash
+curl -sS -X POST \
+  "http://seatunnel-web.company.local/api/v1/dolphinscheduler/sync/tasks/oracle_to_starrocks_inline/run" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer xxx" \
+  -d '{
+    "triggerType": "DOLPHINSCHEDULER",
+    "runMode": "SCHEDULE",
+    "version": "latest",
+    "bizDate": "2026-07-02",
+    "idempotencyKey": "ds-process-instance-10001",
+    "params": {}
+  }'
+```
+
+```bash
+curl -sS \
+  "http://seatunnel-web.company.local/api/v1/dolphinscheduler/sync/runs/10086" \
+  -H "Authorization: Bearer xxx"
+```
+
+Database upgrade for existing deployments:
+
+```sql
+ALTER TABLE `t_seatunnel_web_sync_run`
+  ADD UNIQUE KEY `uk_sync_run_task_scheduler` (`task_id`, `scheduler_run_id`);
+```
+
+Fresh deployments can import `seatunnel_sync_control_mysql.sql`; existing
+deployments can apply `seatunnel_sync_control_dolphinscheduler_upgrade_mysql.sql`.
+
+### Generic Job Definition Scheduler APIs
+
 Async run:
 
 ```http

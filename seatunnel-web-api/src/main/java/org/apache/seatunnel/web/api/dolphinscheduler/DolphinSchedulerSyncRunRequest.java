@@ -1,11 +1,11 @@
-package org.apache.seatunnel.web.spi.bean.dto;
+package org.apache.seatunnel.web.api.dolphinscheduler;
 
 import lombok.Data;
 
 import java.util.Map;
 
 @Data
-public class RunTaskRequest {
+public class DolphinSchedulerSyncRunRequest {
 
     private String triggerType;
 
@@ -15,11 +15,7 @@ public class RunTaskRequest {
 
     private String bizDate;
 
-    private String schedulerRunId;
-
     private String idempotencyKey;
 
     private Map<String, Object> params;
-
-    private Boolean waitForFinish;
 }

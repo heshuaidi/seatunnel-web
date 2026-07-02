@@ -92,10 +92,17 @@ class SyncRunCoordinatorServiceImplTest {
         Mockito.when(batchService.createBatchForRun(
                 Mockito.any(),
                 Mockito.any(),
+                Mockito.eq(SyncTriggerType.SCHEDULED),
+                Mockito.eq(SyncRunMode.NORMAL)
+        )).thenReturn(batch());
+        Mockito.when(batchService.createBatchForRun(
+                Mockito.any(),
+                Mockito.any(),
                 Mockito.eq(SyncTriggerType.RETRY),
                 Mockito.eq(SyncRunMode.RERUN)
         )).thenReturn(batch());
         Mockito.when(batchService.getByBatchId("old_batch")).thenReturn(originalBatch());
+        Mockito.when(batchService.getByBatchId("existing_batch")).thenReturn(existingBatch());
         Mockito.when(batchService.updateStatus(Mockito.anyString(), Mockito.any(), Mockito.any())).thenReturn(true);
         Mockito.when(batchService.updateMetrics(Mockito.anyString(), Mockito.any(), Mockito.any(), Mockito.any()))
                 .thenReturn(true);
@@ -222,6 +229,60 @@ class SyncRunCoordinatorServiceImplTest {
     }
 
     @Test
+    void runTaskWithIdempotencyKeyShouldCreateRunRecordAndInjectBatchId() {
+        RunTaskRequest request = request();
+        request.setWaitForFinish(false);
+        request.setTriggerType(SyncTriggerType.SCHEDULED.getCode());
+        request.setRunMode(SyncRunMode.NORMAL.getCode());
+        request.setBizDate("2026-07-02");
+        request.setIdempotencyKey("ds-process-instance-10001");
+
+        RunResultVO result = service.runTask("task_1", request);
+
+        Assertions.assertEquals(SyncRunStatus.SUBMITTED.getCode(), result.getRunStatus());
+        Assertions.assertEquals("batch_1", result.getBatchId());
+        org.mockito.ArgumentCaptor<SyncRunEntity> runCaptor =
+                org.mockito.ArgumentCaptor.forClass(SyncRunEntity.class);
+        Mockito.verify(runService).create(runCaptor.capture());
+        Assertions.assertEquals("ds-process-instance-10001", runCaptor.getValue().getSchedulerRunId());
+        Assertions.assertEquals("batch_1", runCaptor.getValue().getBatchId());
+
+        org.mockito.ArgumentCaptor<String> hoconCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
+        Mockito.verify(zetaClient).submitJob(Mockito.eq(7L), Mockito.anyString(), hoconCaptor.capture());
+        Assertions.assertTrue(hoconCaptor.getValue().contains("batch = \"batch_1\""));
+        Assertions.assertTrue(hoconCaptor.getValue().contains("scheduler = \"ds-process-instance-10001\""));
+        Assertions.assertTrue(hoconCaptor.getValue().contains("biz = \"2026-07-02\""));
+        Mockito.verify(watermarkService, Mockito.never())
+                .advanceWatermark(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+    }
+
+    @Test
+    void duplicateIdempotencyKeyShouldReturnExistingRunWithoutSecondBatchOrSubmit() {
+        Mockito.when(runService.getByTaskIdAndSchedulerRunId(1L, "ds-process-instance-10001"))
+                .thenReturn(existingRun());
+        RunTaskRequest request = request();
+        request.setWaitForFinish(false);
+        request.setIdempotencyKey("ds-process-instance-10001");
+
+        RunResultVO result = service.runTask("task_1", request);
+
+        Assertions.assertEquals("existing_run", result.getRunId());
+        Assertions.assertEquals("existing_batch", result.getBatchId());
+        Assertions.assertEquals("job-existing", result.getSeatunnelJobId());
+        Assertions.assertEquals(SyncRunStatus.SUBMITTED.getCode(), result.getRunStatus());
+        Mockito.verify(watermarkService, Mockito.never()).calculateNextRange(Mockito.any(), Mockito.anyMap());
+        Mockito.verify(batchService, Mockito.never()).createBatchForRun(
+                Mockito.any(),
+                Mockito.any(),
+                Mockito.any(),
+                Mockito.any()
+        );
+        Mockito.verify(zetaClient, Mockito.never()).submitJob(Mockito.any(), Mockito.anyString(), Mockito.anyString());
+        Mockito.verify(watermarkService, Mockito.never())
+                .advanceWatermark(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+    }
+
+    @Test
     void rerunSameRangeShouldUseOriginalRangeAndAdvanceAfterSuccess() {
         VerifyResult verifyResult = new VerifyResult();
         verifyResult.setPassed(true);
@@ -316,7 +377,8 @@ class SyncRunCoordinatorServiceImplTest {
                 .id(2L)
                 .taskId(1L)
                 .versionNo(1)
-                .hoconTemplate("job { name = \"${run_id}\" batch = \"${batch_id}\" }")
+                .hoconTemplate("job { name = \"${run_id}\" batch = \"${batch_id}\" "
+                        + "scheduler = \"${scheduler_run_id}\" biz = \"${biz_date}\" }")
                 .build();
     }
 
@@ -384,6 +446,29 @@ class SyncRunCoordinatorServiceImplTest {
                 .batchStartTime(toDate(LocalDateTime.of(2026, 6, 1, 0, 0, 0)))
                 .batchEndTime(toDate(LocalDateTime.of(2026, 6, 2, 0, 0, 0)))
                 .status(SyncBatchStatus.FAILED)
+                .build();
+    }
+
+    private SyncRunEntity existingRun() {
+        return SyncRunEntity.builder()
+                .id(12L)
+                .runId("existing_run")
+                .taskId(1L)
+                .taskVersionId(2L)
+                .batchId("existing_batch")
+                .schedulerRunId("ds-process-instance-10001")
+                .seatunnelJobId("job-existing")
+                .status(SyncRunStatus.SUBMITTED)
+                .build();
+    }
+
+    private SyncBatchEntity existingBatch() {
+        return SyncBatchEntity.builder()
+                .id(22L)
+                .batchId("existing_batch")
+                .taskId(1L)
+                .taskCode("task_1")
+                .status(SyncBatchStatus.SUBMITTED)
                 .build();
     }
 

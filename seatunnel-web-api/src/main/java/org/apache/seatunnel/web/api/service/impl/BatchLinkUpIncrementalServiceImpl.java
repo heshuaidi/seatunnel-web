@@ -384,7 +384,7 @@ public class BatchLinkUpIncrementalServiceImpl extends SyncServiceSupport
             run.setGeneratedHocon(renderedHocon);
             syncAuditService.appendInfo(runId, batchId, task.getId(), task.getTaskCode(),
                     SyncAuditEventType.RENDER_HOCON, "Batch-link-up HOCON rendered",
-                    Map.of("hoconHash", hoconHash));
+                    Map.of("hoconHash", hoconHash, "renderedHoconHash", hoconHash));
 
             String jobName = task.getTaskCode() + "_" + runId;
             syncAuditService.appendInfo(runId, batchId, task.getId(), task.getTaskCode(),
